@@ -124,7 +124,7 @@ input { width: 220px; max-width: 100%; }
 .grade.C { background: var(--grade-c); color: var(--grade-c-ink); }
 .why { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; align-items: start; }
 .why:empty { display: none; }
-.why .grade { width: 32px; height: 32px; font-size: 16px; grid-row: span 2; }
+.why .grade { width: 32px; height: 32px; font-size: 16px; }
 .why .summary { font-weight: 600; }
 .why ul { margin: 0; padding-left: 18px; color: var(--text-secondary); font-size: 13px; }
 .method { margin-top: 16px; color: var(--text-secondary); font-size: 13px; }

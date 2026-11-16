@@ -483,12 +483,10 @@ const FEATURE_SHORT = {
   min_share: "playing time", age: "age", team_ppg: "team results", dutch: "Dutch nationality",
 };
 
-// Ratings are per season: the selected one, or the latest season inside a custom range
-function ratingSeason() {
-  if (seasons.some(s => s.id === state.season)) return state.season;
-  return seasons.find(s => s.start <= state.to && s.end >= state.from)?.id;
-}
-const ratingFor = p => ratingOf.get(`${p.id}|${ratingSeason()}`);
+// Ratings are per full season: show every season that overlaps the selected range, latest first
+const ratingSeasons = () => seasons.filter(s => s.start <= state.to && s.end >= state.from).map(s => s.id);
+const ratingsFor = p => ratingSeasons().map(s => ratingOf.get(`${p.id}|${s}`)).filter(Boolean);
+const seasonLabel = id => seasons.find(s => s.id === id).label;
 
 function fmtFeature(f, v) {
   if (v == null) return "–";
@@ -518,11 +516,11 @@ function gradeBadge(g) {
 
 function drawValue() {
   const card = document.getElementById("value-card");
-  const season = ratingSeason();
-  card.hidden = !RATINGS.meta || !season;
+  const inRange = ratingSeasons();
+  card.hidden = !RATINGS.meta || !inRange.length;
   if (card.hidden) return;
   const m = RATINGS.meta;
-  const seasonLabel = seasons.find(s => s.id === season).label;
+  const multi = inRange.length > 1;
 
   if (group() === "gk") {
     document.getElementById("vr-sub").textContent = "The value rating covers outfield players only; there are too few keepers to train a model on.";
@@ -531,13 +529,14 @@ function drawValue() {
   }
   const byId = new Map(AGG.map(p => [p.id, p]));
   const data = RATINGS.rows
-    .filter(r => r.season === season)
-    .map(r => ({ r, p: byId.get(r.id) }))
+    .filter(r => inRange.includes(r.season))
+    .map(r => ({ r, p: byId.get(r.id), name: byId.get(r.id)?.name + (multi ? ` (${seasonLabel(r.season)})` : "") }))
     .filter(d => d.p && posMatch(d.p, state.pos) && (!state.team || d.p.teams.includes(state.team)));
 
   document.getElementById("vr-sub").textContent =
-    `${seasonLabel}${state.season !== season ? " (latest season in the selected range)" : ""} · ${data.length} players with enough minutes · ` +
-    `${m.model}, out-of-fold R² ${m.r2} on log value, typical error ×${m.mae_factor}`;
+    `${inRange.map(seasonLabel).join(" and ")} · ${data.length} ${multi ? "player-seasons" : "players"} with enough minutes · ` +
+    `${m.model}, out-of-fold R² ${m.r2} on log value, typical error ×${m.mae_factor}` +
+    (state.season === "custom" ? ". Ratings cover full seasons, so dates inside a season don't change them." : "");
 
   document.getElementById("vr-legend").replaceChildren(...["A", "B", "C"].map(g => {
     const s = el("span");
@@ -550,10 +549,10 @@ function drawValue() {
   drawValueChart(data);
 
   const list = d3.sort(data.filter(d => d.r.grade !== "C"), d => -d.r.gap).slice(0, 25);
-  document.getElementById("vr-list").replaceChildren(...(list.length ? list.map(({ r, p }) => {
+  document.getElementById("vr-list").replaceChildren(...(list.length ? list.map(({ r, p, name }) => {
     const li = el("li");
     const body = el("div");
-    body.append(el("div", "who", `${p.name} · ${r.role} · ${p.teams.join(" → ")}`), el("div", "what", ratingSummary(r)));
+    body.append(el("div", "who", `${name} · ${r.role} · ${p.teams.join(" → ")}`), el("div", "what", ratingSummary(r)));
     li.append(gradeBadge(r.grade), body);
     li.addEventListener("click", () => { select(p); document.getElementById("profile").scrollIntoView({ behavior: "smooth" }); });
     return li;
@@ -616,16 +615,15 @@ function drawValueChart(data) {
   svg.append("g").selectAll("circle").data(d3.sort(data.filter(d => d.p !== sel), d => order[d.r.grade])).join("circle")
     .attr("cx", d => x(d.r.value)).attr("cy", d => y(d.r.expected)).attr("r", 4)
     .attr("fill", d => `var(--grade-${d.r.grade.toLowerCase()})`).attr("stroke", "var(--surface-1)").attr("stroke-width", 2);
-  const selD = data.find(d => d.p === sel);
-  if (selD) {
-    svg.append("circle").attr("cx", x(selD.r.value)).attr("cy", y(selD.r.expected)).attr("r", 6)
-      .attr("fill", "var(--highlight)").attr("stroke", "var(--surface-1)").attr("stroke-width", 2);
-  }
-  const labelled = d3.sort(data.filter(d => d.r.grade === "A" && d !== selD), d => -d.r.gap).slice(0, 3);
-  if (selD) labelled.push(selD);
+  // The selected player can appear once per season
+  const selDs = data.filter(d => d.p === sel);
+  svg.append("g").selectAll("circle").data(selDs).join("circle")
+    .attr("cx", d => x(d.r.value)).attr("cy", d => y(d.r.expected)).attr("r", 6)
+    .attr("fill", "var(--highlight)").attr("stroke", "var(--surface-1)").attr("stroke-width", 2);
+  const labelled = [...d3.sort(data.filter(d => d.r.grade === "A" && d.p !== sel), d => -d.r.gap).slice(0, 3), ...selDs];
   svg.append("g").selectAll("text").data(labelled).join("text")
-    .attr("class", d => d === selD ? "label-strong halo" : "halo")
-    .attr("x", d => x(d.r.value)).attr("y", d => y(d.r.expected)).attr("dx", 9).attr("dy", "0.32em").text(d => d.p.name);
+    .attr("class", d => d.p === sel ? "label-strong halo" : "halo")
+    .attr("x", d => x(d.r.value)).attr("y", d => y(d.r.expected)).attr("dx", 9).attr("dy", "0.32em").text(d => d.name);
 
   const delaunay = d3.Delaunay.from(data, d => x(d.r.value), d => y(d.r.expected));
   const ring = svg.append("circle").attr("r", 7).attr("fill", "none").attr("stroke", "var(--text-primary)").attr("stroke-width", 1.5).attr("visibility", "hidden");
@@ -640,7 +638,7 @@ function drawValueChart(data) {
       event.target.classList.toggle("clickable", !!d);
       if (!d) { ring.attr("visibility", "hidden"); hideTip(); return; }
       ring.attr("cx", x(d.r.value)).attr("cy", y(d.r.expected)).attr("visibility", "visible");
-      showTip(event, `${d.p.name} · ${d.r.role} · ${d.p.teams.join(" → ")}`, [
+      showTip(event, `${d.name} · ${d.r.role} · ${d.p.teams.join(" → ")}`, [
         ["Grade", `${d.r.grade} · ${GRADES[d.r.grade]}`], ["Actual value", eur(d.r.value)],
         ["Expected value", eur(d.r.expected)], ["Gap", d.r.gap.toFixed(2) + "×"],
       ]);
@@ -712,17 +710,16 @@ function drawProfile() {
   }));
 
   const why = document.getElementById("pr-why");
-  const r = ratingFor(p);
-  if (r) {
+  const rs = ratingsFor(p);
+  why.replaceChildren(...rs.flatMap(r => {
     const text = el("div");
-    text.append(el("div", "summary", `Value rating ${r.grade} (${GRADES[r.grade]}): ${ratingSummary(r)}`));
+    const season = rs.length > 1 ? ` ${seasonLabel(r.season)}` : "";
+    text.append(el("div", "summary", `Value rating${season} ${r.grade} (${GRADES[r.grade]}): ${ratingSummary(r)}`));
     const ul = el("ul");
     for (const x of r.reasons) ul.append(el("li", null, reasonLine(r, x)));
     text.append(ul);
-    why.replaceChildren(gradeBadge(r.grade), text);
-  } else {
-    why.replaceChildren();
-  }
+    return [gradeBadge(r.grade), text];
+  }));
 
   drawPercentiles(p);
   drawForm(p);
