@@ -186,7 +186,7 @@ const MIN_OPTIONS = [0, 90, 270, 450, 900, 1350, 1800, 2250];
 
 const state = {
   season: seasons[0].id, from: seasons[0].start, to: seasons[0].end,
-  pos: "out", team: "", minMin: 0, minManual: false, mode: "p90",
+  pos: "out", team: "", minMin: 0, minManual: false, mode: "p90", cmp: "role",
   view: "finishing", x: "xg", y: "goals", lb: "goals", selectedId: null,
   sort: { key: "min", desc: true },
 };
@@ -354,7 +354,8 @@ function drawExplorer() {
     return b;
   }));
 
-  const data = filtered().map(p => ({ p, x: val(p, mx), y: val(p, my) })).filter(d => d.x != null && d.y != null);
+  const data = filtered().map(p => ({ p, x: val(p, mx), y: val(p, my) }))
+    .filter(d => d.x != null && d.y != null && !(mx.key === "value" && d.x <= 0) && !(my.key === "value" && d.y <= 0));
   const xm = d3.median(data, d => d.x), ym = d3.median(data, d => d.y);
   for (const d of data) d.q = (d.y > ym ? "t" : "b") + (d.x > xm ? "r" : "l");
 
@@ -362,23 +363,36 @@ function drawExplorer() {
   drawQuadrants(data, view, mx, my);
 }
 
+const VALUE_TICKS = [1e5, 2e5, 5e5, 1e6, 2e6, 5e6, 1e7, 2e7, 5e7, 1e8];
+
+// Market value spans €100k to €30M+, so it gets a log axis. Only summable stats start at zero;
+// for ratings and percentages zero means nothing and would squeeze every dot into a thin band.
+function axisScale(m, values, range) {
+  const [a, b] = d3.extent(values);
+  if (m.key === "value" && a > 0) return d3.scaleLog([a * 0.8, b * 1.25], range);
+  if (m.type === "count" || m.type === "ratio") return d3.scaleLinear([Math.min(0, a ?? 0), b ?? 1], range).nice();
+  const pad = ((b ?? 1) - (a ?? 0)) * 0.05;
+  return d3.scaleLinear([(a ?? 0) - pad, (b ?? 1) + pad], range).nice();
+}
+const axisTicks = s => s.base ? VALUE_TICKS.filter(v => v >= s.domain()[0] && v <= s.domain()[1]) : s.ticks(6);
+const axisFormat = m => m.key === "value" ? v => fmt(M.value, v) : tick;
+
 function drawScatter(data, xm, ym, view, mx, my) {
   const height = 460;
   const { svg, width } = svgIn("scatter", height);
   const mg = { top: 12, right: 24, bottom: 44, left: 60 };
-  const ext = k => { const [a, b] = d3.extent(data, d => d[k]); return [Math.min(0, a ?? 0), b ?? 1]; };
-  const x = d3.scaleLinear(ext("x"), [mg.left, width - mg.right]).nice();
-  const y = d3.scaleLinear(ext("y"), [height - mg.bottom, mg.top]).nice();
+  const x = axisScale(mx, data.map(d => d.x), [mg.left, width - mg.right]);
+  const y = axisScale(my, data.map(d => d.y), [height - mg.bottom, mg.top]);
   const [x0, x1] = x.range(), [y0, y1] = y.range();
 
   svg.append("g").attr("class", "gridline").attr("transform", `translate(0,${y0})`)
-    .call(d3.axisBottom(x).ticks(6).tickSize(-(y0 - y1)).tickFormat(""));
+    .call(d3.axisBottom(x).tickValues(axisTicks(x)).tickSize(-(y0 - y1)).tickFormat(""));
   svg.append("g").attr("class", "gridline").attr("transform", `translate(${x0},0)`)
-    .call(d3.axisLeft(y).ticks(6).tickSize(-(x1 - x0)).tickFormat(""));
+    .call(d3.axisLeft(y).tickValues(axisTicks(y)).tickSize(-(x1 - x0)).tickFormat(""));
   svg.append("g").attr("class", "axis").attr("transform", `translate(0,${y0})`)
-    .call(d3.axisBottom(x).ticks(6).tickFormat(tick).tickSizeOuter(0));
+    .call(d3.axisBottom(x).tickValues(axisTicks(x)).tickFormat(axisFormat(mx)).tickSizeOuter(0));
   svg.append("g").attr("class", "axis").attr("transform", `translate(${x0},0)`)
-    .call(d3.axisLeft(y).ticks(6).tickFormat(tick).tickSizeOuter(0));
+    .call(d3.axisLeft(y).tickValues(axisTicks(y)).tickFormat(axisFormat(my)).tickSizeOuter(0));
   svg.append("text").attr("class", "axis-title").attr("x", x1).attr("y", height - 6).attr("text-anchor", "end").text(label(mx));
   svg.append("text").attr("class", "axis-title").attr("transform", `translate(14,${y1}) rotate(-90)`)
     .attr("text-anchor", "end").text(label(my));
@@ -726,9 +740,13 @@ function drawProfile() {
 }
 
 function drawPercentiles(p) {
-  // Compare with the same detailed role when known, otherwise the same line
-  const pool = AGG.filter(q => q.min >= state.minMin && (p.role ? q.role === p.role : q.line === p.line));
-  const who = (p.role ? ROLES[p.role] : LINES[p.line])[1];
+  // Comparison group: same detailed role (or line when the role is unknown), same line, or all outfield players.
+  // Keepers are always compared with keepers.
+  const cmp = p.line === "GK" ? "line" : state.cmp;
+  document.getElementById("pr-cmp").disabled = p.line === "GK";
+  const same = { role: q => p.role ? q.role === p.role : q.line === p.line, line: q => q.line === p.line, out: q => q.line !== "GK" }[cmp];
+  const pool = AGG.filter(q => q.min >= state.minMin && same(q));
+  const who = cmp === "out" ? "outfield players" : (cmp === "role" && p.role ? ROLES[p.role] : LINES[p.line])[1];
   document.getElementById("pct-sub").textContent =
     `Per 90 where it applies, vs ${pool.length} ${who} with at least ${state.minMin} minutes in this period` +
     (p.min < state.minMin ? `. ${p.name} is below that threshold, so treat these as rough.` : ".");
@@ -966,6 +984,7 @@ function init() {
   on("sc-x", v => { state.x = v; matchView(); syncControls(); });
   on("sc-y", v => { state.y = v; matchView(); syncControls(); });
   on("lb-metric", v => { state.lb = v; });
+  on("pr-cmp", v => { state.cmp = v; });
 
   document.getElementById("pr-search").addEventListener("change", e => {
     const p = AGG.find(p => `${p.name} (${p.teams.join(" → ")})` === e.target.value);

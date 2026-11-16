@@ -90,7 +90,16 @@
         <p class="sub" id="pr-sub"></p>
         <div class="tiles" id="pr-tiles"></div>
         <div class="why" id="pr-why"></div>
-        <h3>Percentile vs same position</h3>
+        <div class="card-head sub-head">
+          <h3>Percentiles</h3>
+          <label>Compare with
+            <select id="pr-cmp">
+              <option value="role">Same position</option>
+              <option value="line">Same line (defenders, midfielders, forwards)</option>
+              <option value="out">All outfield players</option>
+            </select>
+          </label>
+        </div>
         <p class="sub" id="pct-sub"></p>
         <div class="chart" id="percentiles"></div>
         <h3>FotMob rating per match</h3>
