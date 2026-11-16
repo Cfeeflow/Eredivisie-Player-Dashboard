@@ -1,0 +1,52 @@
+{
+  "_help": [
+    "Which leagues and seasons scrape.py fetches. Set 'scrape' to true for a league and run: python scrape.py",
+    "seasons: shown in the dashboard and used by the value model. history: only used for the model's last-season features.",
+    "id: the number in the league's FotMob URL, e.g. fotmob.com/leagues/40/... is 40.",
+    "transfermarkt: the league's competition code in transfermarkt-datasets, used by transfermarkt.py to confirm player matches.",
+    "dashboard_league: the league build_data.py and value_model.py use (the dashboard shows one league for now)."
+  ],
+  "dashboard_league": "eredivisie",
+  "leagues": {
+    "eredivisie": {
+      "id": 57,
+      "transfermarkt": "NL1",
+      "name": "Eredivisie",
+      "scrape": true,
+      "seasons": ["2023-2024", "2024-2025", "2025-2026", "2026-2027"],
+      "history": ["2022-2023"]
+    },
+    "belgium": {
+      "id": 40,
+      "transfermarkt": "BE1",
+      "name": "Belgian Pro League",
+      "scrape": false,
+      "seasons": ["2023-2024", "2024-2025", "2025-2026", "2026-2027"],
+      "history": ["2022-2023"]
+    },
+    "portugal": {
+      "id": 61,
+      "transfermarkt": "PO1",
+      "name": "Liga Portugal",
+      "scrape": false,
+      "seasons": ["2023-2024", "2024-2025", "2025-2026", "2026-2027"],
+      "history": ["2022-2023"]
+    },
+    "premier-league": {
+      "id": 47,
+      "transfermarkt": "GB1",
+      "name": "Premier League",
+      "scrape": false,
+      "seasons": ["2023-2024", "2024-2025", "2025-2026", "2026-2027"],
+      "history": ["2022-2023"]
+    },
+    "ligue-1": {
+      "id": 53,
+      "transfermarkt": "FR1",
+      "name": "Ligue 1",
+      "scrape": false,
+      "seasons": ["2023-2024", "2024-2025", "2025-2026", "2026-2027"],
+      "history": ["2022-2023"]
+    }
+  }
+}

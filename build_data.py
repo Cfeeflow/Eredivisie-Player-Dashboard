@@ -1,4 +1,4 @@
-"""Turn the scraped FotMob CSVs (raw/*.csv) into data/players.js for the dashboard.
+"""Turn the scraped FotMob CSVs (raw/<dashboard_league>/matches_*.csv) into data/players.js for the dashboard.
 
 Usage: python build_data.py
 The dashboard aggregates in the browser (so it can filter by date), so this writes one compact row
@@ -10,7 +10,10 @@ from pathlib import Path
 import pandas as pd
 
 HERE = Path(__file__).parent
-RAW = HERE / "raw"
+CONFIG = json.loads((HERE / "leagues.json").read_text(encoding="utf-8"))
+LEAGUE = CONFIG["dashboard_league"]  # the dashboard shows one league for now
+SEASONS = CONFIG["leagues"][LEAGUE]["seasons"]  # history seasons are for the model only, not shown
+RAW = HERE / "raw" / LEAGUE
 OUT = HERE / "data" / "players.js"
 
 # CSV column -> short key used in the dashboard. Summed over the selected date range.
@@ -85,7 +88,8 @@ def role(position_id, formation):
 
 
 def main():
-    df = pd.concat([pd.read_csv(f, low_memory=False) for f in sorted(RAW.glob("*.csv"))], ignore_index=True)
+    files = [RAW / f"matches_{s}.csv" for s in SEASONS if (RAW / f"matches_{s}.csv").exists()]
+    df = pd.concat([pd.read_csv(f, low_memory=False) for f in files], ignore_index=True)
     df = df[df["Minutes played"].fillna(0) > 0].copy()  # unused substitutes have a row but no minutes
     df = df.sort_values(["date", "match_id"])            # the dashboard relies on rows being in date order
     df[list(COUNT_COLS)] = df[list(COUNT_COLS)].fillna(0)  # a missing stat in a match means it didn't happen

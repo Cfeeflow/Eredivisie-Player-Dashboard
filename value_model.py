@@ -1,8 +1,8 @@
 """Value rating: which outfield players perform like they're worth more than their market value?
 
-Usage: python value_model.py
-Reads raw/*.csv (and raw_history/*.csv for last-season features), writes data/ratings.js and prints the
-model checks.
+Usage: python value_model.py [--source transfermarkt]
+Reads raw/<league>/matches_*.csv (history seasons for last-season features only) and the player pages in
+raw/players/, writes data/ratings.js and prints the model checks.
 
 How it works
 1. One row per player per season (all seasons pooled), outfield players with enough minutes. Per-90 stats and
@@ -14,8 +14,10 @@ How it works
    linear calibration so predictions aren't compressed towards the average price.
 4. Gap = expected value / actual value. A: gap >= 2, B: gap >= 1.25; both also need a FotMob rating at or
    above the median for his role and age 27 or younger. C: the rest. Set with a backtest: these grades are the
-   ones that predicted a player's value rising the next season.
+   ones that predicted a player's value rising in the year after the season.
 5. Reasons: each feature is set to the role median and the change in expected value is that feature's effect.
+6. Checks: the backtest, a forward test (train on earlier seasons only) and a growth model that predicts the
+   value change directly, compared with a baseline of age and gap.
 """
 import json
 import sys
@@ -32,21 +34,37 @@ from build_data import role  # same formation-slot -> role mapping as the dashbo
 
 HERE = Path(__file__).parent
 OUT = HERE / "data" / "ratings.js"
+CONFIG = json.loads((HERE / "leagues.json").read_text(encoding="utf-8"))
+LEAGUE = CONFIG["dashboard_league"]  # one model per league; for now the dashboard's league
+RAW = HERE / "raw"
 
 # ---------- settings ----------
 
 # Grades, set with the backtest (does a grade predict the player's value rising the next season?):
 # - A gap only means something for players rated at or above the median for their position; below it, players
-#   with big gaps rose as often as everyone else (41%).
-# - Age is decisive: good players with a gap rose in 83% of cases at 23 or younger, 68% at 24-27, but only
-#   ~20% after 27. An older player's low price reflects the few seasons he has left, so the market is right.
-# - Gap size: A needs ×2 (all 15 such players rose in the backtest), B ×1.25 (68% rose, vs 38% for C).
+#   with a gap of 1.25 or more rose as often as a C (31%).
+# - Age is decisive: good players with a gap rose in 58-59% of cases up to 27, but only 21% after 27. An older
+#   player's low price reflects the few seasons he has left, so the market is right.
+# - Gap size: A needs ×2 (9 of 10 such players rose), B ×1.25 (50% rose, vs 27% for C). For B, most of the
+#   edge comes from being good and young: good young players without a gap rose 43% of the time.
 # The rules held in each season separately (A > B > C every time), so they aren't fitted to one season.
 A_GAP, B_GAP = 2.0, 1.25
 MAX_AGE = 27
-# FotMob stores no market value for many matches before 2025-26. A season's value needs at least this many
-# observations, so one stray number can't drive a grade.
+# Market value source: "scisports" (FotMob's player pages, scrape.py) or "transfermarkt" (transfermarkt.py).
+# Can be overridden on the command line: python value_model.py --source transfermarkt
+# SciSports, because its gap predicts the later value change: backtest correlation +0.16, against +0.05 with
+# Transfermarkt (whose values follow transfers that have happened and change only twice a year), although
+# Transfermarkt prices are explained slightly better (R² 0.86 vs 0.83).
+VALUE_SOURCE = "scisports"
+# The value nearest to the season's last match is used, if one exists within this many days. SciSports values
+# are monthly in recent years; Transfermarkt updates a league about twice a year (around December and May), and
+# for the season in progress its latest value is the one from the summer.
+VALUE_WINDOW_DAYS = {"scisports": 45, "transfermarkt": 180}
+# Only when a player has no value history: the lineup values from the matches, and then at least this many,
+# because FotMob stores none for many matches before 2025-26
 MIN_VALUE_OBS = 3
+# The backtest and the growth model look at the value this many days after the season's end
+HORIZON_DAYS = 365
 # Tree models can't extrapolate beyond the prices they have seen, so they only replace the linear model when
 # their out-of-fold R² is at least this much higher. Smaller differences are within noise between runs.
 TREE_MARGIN = 0.02
@@ -54,7 +72,21 @@ TREE_MARGIN = 0.02
 # from the role average. 450 gave the best out-of-fold R² of the weights tested (0, 450, 900, 1800, 3600).
 SHRINK_MINUTES = 450
 # Features that are averages over matches and therefore noisy for players with few minutes
-SHRUNK = ["rating", "npxg90", "xa90", "final3rd90", "dribbles90", "def90", "aerials90", "passes90", "pass_pct"]
+SHRUNK = ["rating", "npxg90", "xa90", "final3rd90", "dribbles90", "def90", "aerials90", "passes90", "pass_pct",
+          "touches90", "dispossessed90", "fouled90", "recoveries90", "longballs90"]
+# Candidate features, tested with feature_test.py against the backtest; only those that helped are in FEATURES.
+# Tested November 2026: none changed the backtest correlation by more than 0.003, overall or for central
+# midfielders, so none was added. What makes a midfielder valuable (positioning, press resistance) isn't in
+# FotMob's stats.
+CANDIDATES = {
+    "touches90": "Touches per 90",
+    "dispossessed90": "Times dispossessed per 90",
+    "fouled90": "Fouls won per 90",
+    "recoveries90": "Recoveries per 90",
+    "longballs90": "Accurate long balls per 90",
+    "caps_before": "International caps before this season",
+    "height": "Height",
+}
 # Cross-validation: 5 folds, repeated 5 times with different random splits, predictions averaged.
 # Repeating smooths out the luck of any single split.
 REPEATS, FOLDS = 5, 5
@@ -90,11 +122,11 @@ CONTEXT = {"age", "team_ppg", "dutch", "team_value", "has_prev"}
 # ---------- data ----------
 
 def load_matches():
-    """All match rows. Seasons in raw_history/ only supply last-season features; they aren't graded."""
-    files = sorted((HERE / "raw").glob("*.csv")) + sorted((HERE / "raw_history").glob("*.csv"))
-    frames = {f: pd.read_csv(f, low_memory=False) for f in files}
-    df = pd.concat(frames.values(), ignore_index=True)
-    history = {s for f, d in frames.items() if f.parent.name == "raw_history" for s in d["season"].unique()}
+    """All match rows of the league. History seasons (leagues.json) only supply last-season features; they aren't graded."""
+    league = CONFIG["leagues"][LEAGUE]
+    files = [RAW / LEAGUE / f"matches_{s}.csv" for s in league["history"] + league["seasons"]]
+    df = pd.concat([pd.read_csv(f, low_memory=False) for f in files if f.exists()], ignore_index=True)
+    history = set(league["history"])
     df = df[df["Minutes played"].fillna(0) > 0].copy()  # unused substitutes have a row but no minutes
     df = df.sort_values(["date", "match_id"])            # chronological, so .iloc[-1] is the latest value
     df["role"] = [role(p, f) for p, f in zip(df["position_id"], df["formation"])]
@@ -158,9 +190,17 @@ def player_seasons(df, history=()):
             "aerials90": p90("Aerial duels won"),
             "passes90": p90("Accurate passes"),
             "pass_pct": s["Accurate passes"] / s["Accurate passes total"] * 100 if s["Accurate passes total"] else np.nan,
+            # Candidates aimed at midfielders, kept only if they improve the backtest (see CANDIDATES)
+            "touches90": p90("Touches"),
+            "dispossessed90": p90("Dispossessed"),   # losing the ball: lower is better
+            "fouled90": p90("Was fouled"),
+            "recoveries90": p90("Recoveries"),
+            "longballs90": p90("Accurate long balls"),
         })
     ps = pd.DataFrame(rows)
     ps["min_share"] = ps["min_share"].clip(upper=1)  # a mid-season transfer can push it just over 100%
+    ps["end_date"] = pd.to_datetime(ps["season"].map(df.groupby("season")["date"].max()))
+    ps = add_player_pages(ps)
     ps = shrink(ps)
 
     # Club reputation: average log market value of his teammates that season, excluding himself.
@@ -182,9 +222,64 @@ def player_seasons(df, history=()):
     # Rows to train and grade: a reliable market value, a known age, and enough minutes to trust per-90
     # numbers (30% of the most anyone played that season, at least 450). History seasons only feed 'prev'.
     max_min = ps.groupby("season")["minutes"].transform("max")
-    keep = ((ps["value_obs"] >= MIN_VALUE_OBS) & ps["age"].notna() & (ps["minutes"] >= np.maximum(450, 0.3 * max_min))
+    reliable_value = ps["value_from_history"] | (ps["value_obs"] >= MIN_VALUE_OBS)
+    keep = (reliable_value & ps["value"].notna() & ps["age"].notna() & (ps["minutes"] >= np.maximum(450, 0.3 * max_min))
             & ~ps["season"].isin(history))
     return ps[keep].reset_index(drop=True)
+
+
+def value_near(values, ps, when):
+    """For each row of ps: the value-history entry nearest to `when` (a date per row), within VALUE_WINDOW_DAYS."""
+    left = pd.DataFrame({"row": range(len(ps)), "player_id": ps["player_id"].values, "date": pd.to_datetime(when).values})
+    hit = pd.merge_asof(left.sort_values("date"), values.sort_values("date"), on="date", by="player_id",
+                        direction="nearest", tolerance=pd.Timedelta(days=VALUE_WINDOW_DAYS[VALUE_SOURCE]))
+    return hit.sort_values("row").set_index("row")
+
+
+def add_player_pages(ps):
+    """Market value at season end, value a year later, international caps and height, from the player pages.
+
+    The value history covers every player wherever he played, so the backtest can follow players sold abroad.
+    Contract end is not used: the page only shows the current contract, which says nothing about earlier seasons.
+    """
+    folder = RAW / "players"
+    ps["value_from_history"] = False
+    ps["next_value"] = np.nan
+    ps["caps_before"] = np.nan
+    ps["height"] = np.nan
+    if not (folder / "values.csv").exists():
+        return ps
+    if VALUE_SOURCE == "transfermarkt":
+        values = pd.read_csv(folder / "values_tm.csv", parse_dates=["date"])
+        values["lower"] = values["upper"] = np.nan  # Transfermarkt gives no range
+    else:
+        values = pd.read_csv(folder / "values.csv", parse_dates=["date"])
+    values = values[["player_id", "date", "value", "lower", "upper"]]
+
+    at_end = value_near(values, ps, ps["end_date"])
+    ps["value_from_history"] = at_end["value"].notna().values
+    # History first: complete and consistent over time. The lineup value (SciSports) only fills gaps, and
+    # never with Transfermarkt as the source: mixing the two scales would make the gap partly a source effect.
+    fallback = ps["value"] if VALUE_SOURCE == "scisports" else np.nan
+    ps["value"] = np.where(ps["value_from_history"], at_end["value"].values, fallback)
+    ps["value_lower"], ps["value_upper"] = at_end["lower"].values, at_end["upper"].values
+    later = ps["end_date"] + pd.Timedelta(days=HORIZON_DAYS)
+    ps["next_value"] = np.where(later <= values["date"].max(), value_near(values, ps, later)["value"].values, np.nan)
+
+    caps = pd.read_csv(folder / "caps.csv") if (folder / "caps.csv").exists() else pd.DataFrame(columns=["player_id", "season", "caps"])
+    # Season names are "2025" or "2024/2025"; count the ones that ended before this club season started,
+    # so the feature never uses caps he won later
+    caps["end_year"] = caps["season"].astype(str).str[-4:].astype(int)
+    start_year = ps["season"].str[:4].astype(int)
+    by_player = caps.groupby("player_id")
+    ps["caps_before"] = [by_player.get_group(p).query("end_year < @y")["caps"].sum() if p in by_player.groups else 0
+                         for p, y in zip(ps["player_id"], start_year)]
+    ps["caps_before"] = np.log1p(ps["caps_before"])  # 0, 5 and 50 caps: the first few matter most
+
+    if (folder / "info.csv").exists():
+        info = pd.read_csv(folder / "info.csv").set_index("player_id")
+        ps["height"] = ps["player_id"].map(info["height"])
+    return ps
 
 
 def shrink(ps):
@@ -278,20 +373,75 @@ def backtest(ps):
     the end of season t+1, per grade. R² only says how well we explain today's prices; this checks whether an
     'undervalued' player's price actually went up afterwards.
 
-    Only players still in the Eredivisie the next season can be followed: players sold abroad (often risers)
-    and players who dropped a level are missing.
+    The later value comes from the player pages' value history, so players sold abroad or relegated are
+    followed too. Seasons that ended less than HORIZON_DAYS ago can't be checked yet.
     """
-    nxt = dict(zip(sorted(ps["season"].unique())[:-1], sorted(ps["season"].unique())[1:]))
-    later = ps.set_index(["season", "player_id"])["value"]
-    ps = ps.assign(next_value=[later.get((nxt.get(s), i), np.nan) for s, i in zip(ps["season"], ps["player_id"])])
     ps = ps.dropna(subset=["next_value"])
     change = np.log(ps["next_value"] / ps["value"])  # log change: 0.69 = doubled
-    print(f"\nBacktest: value change to the next season ({len(ps)} player-seasons that can be followed)")
+    print(f"\nBacktest: value change over the {HORIZON_DAYS} days after the season ({len(ps)} player-seasons, "
+          f"seasons {', '.join(sorted(ps['season'].unique()))})")
     out = {}
     for grade, c in change.groupby(ps["grade"]):
         out[grade] = {"n": int(len(c)), "rose": round(float((c > 0).mean()) * 100), "median": round(float(np.exp(c.median())), 2)}
         print(f"  {grade}: n={out[grade]['n']:3}  rose {out[grade]['rose']:3}%  median ×{out[grade]['median']}")
     return out
+
+
+def forward_test(ps, X, y, make):
+    """Train on earlier seasons only, predict the next one: how the model would actually be used.
+
+    The normal cross-validation mixes seasons; this checks the model also works on a season it has never seen
+    anything of. For each season: R² of the predicted log value, and whether its gap predicted the later value.
+    """
+    seasons = sorted(ps["season"].unique())
+    change = np.log(ps["next_value"] / ps["value"]).values
+    print("\nForward test (train on earlier seasons, predict the next)")
+    out = {}
+    for t in seasons[1:]:
+        train, test = (ps["season"] < t).values, (ps["season"] == t).values
+        Xtr = X[train].fillna(X[train].median())
+        model = make().fit(Xtr, y[train])
+        pred = model.predict(X[test].fillna(X[train].median()))
+        slope, intercept = np.polyfit(model.predict(Xtr), y[train], 1)  # calibration from training data only
+        gap = intercept + slope * pred - y[test]
+        known = ~np.isnan(change[test])
+        corr = np.corrcoef(gap[known], change[test][known])[0, 1] if known.sum() > 20 else np.nan
+        out[t] = {"r2": round(float(r2(y[test], intercept + slope * pred)), 2), "backtest_corr": None if np.isnan(corr) else round(float(corr), 2)}
+        print(f"  {t}: trained on {train.sum()} rows, R² {out[t]['r2']:.2f}"
+              + (f", gap vs later value change: corr {corr:+.2f} (n={known.sum()})" if not np.isnan(corr) else ", later value not known yet"))
+    return out
+
+
+def growth_model(ps, X, log_gap):
+    """A second model that predicts the value change over the next HORIZON_DAYS directly, learned from what
+    actually happened to earlier players. The value model asks "what should he cost today?"; this one asks
+    "will his price go up?", which is the question the grades are meant to answer.
+
+    Inputs: the value model's features, its gap, and his current value. Linear, because only a few hundred
+    rows have a known outcome. Returns the evaluation, out-of-fold on the rows whose outcome is known.
+    """
+    has = ps["next_value"].notna().values
+    target = np.log(ps["next_value"] / ps["value"]).values
+    Xg = X.copy()
+    Xg["log_gap"], Xg["log_value"] = log_gap, np.log(ps["value"].values)
+    make = models()["Linear (ridge)"]
+    groups = ps["player_id"].values
+    pred, _ = oof_predict(make, Xg[has], target[has], groups[has], [], ps["role"][has])
+    # Baseline: age and the gap alone, i.e. what the A/B/C rules use
+    base_X = pd.DataFrame({"age": ps["age"], "age2": ps["age"] ** 2, "log_gap": log_gap})[has]
+    base, _ = oof_predict(make, base_X, target[has], groups[has], [], ps["role"][has])
+    t = target[has]
+    top = lambda p: t[p >= np.quantile(p, 0.8)]  # the 20% the model is most positive about
+    stats = {
+        "n": int(has.sum()),
+        "corr": round(float(np.corrcoef(pred, t)[0, 1]), 2), "corr_baseline": round(float(np.corrcoef(base, t)[0, 1]), 2),
+        "top_rose": round(float((top(pred) > 0).mean()) * 100), "top_rose_baseline": round(float((top(base) > 0).mean()) * 100),
+        "all_rose": round(float((t > 0).mean()) * 100),
+    }
+    print(f"\nGrowth model ({stats['n']} player-seasons with a known value {HORIZON_DAYS} days later)")
+    print(f"  corr(predicted, actual change): {stats['corr']:+.2f}   baseline (age + gap only): {stats['corr_baseline']:+.2f}")
+    print(f"  top 20% by prediction rose: {stats['top_rose']}%   baseline top 20%: {stats['top_rose_baseline']}%   everyone: {stats['all_rose']}%")
+    return stats
 
 
 def choose_model(results):
@@ -303,7 +453,11 @@ def choose_model(results):
 # ---------- main ----------
 
 def main():
+    global VALUE_SOURCE
     sys.stdout.reconfigure(encoding="utf-8")  # player names and ² on a Windows console
+    if "--source" in sys.argv:
+        VALUE_SOURCE = sys.argv[sys.argv.index("--source") + 1]
+    print(f"market values: {VALUE_SOURCE}")
     ps = player_seasons(*load_matches())
     feats = [f for f in FEATURES if ps[f].notna().any()]
     missing = [f for f in FEATURES if f not in feats]
@@ -367,6 +521,10 @@ def main():
     print("    " + by_band.round(0).to_string().replace("\n", "\n    "))
     print("\n  grades:", ps["grade"].value_counts().sort_index().to_dict())
     bt = backtest(ps)
+    fwd = forward_test(ps, X, y, r["make"])
+    # Evaluated only: it didn't beat the baseline of age and gap (correlation +0.37 for both), so the grades keep
+    # the A/B/C rules
+    growth_stats = growth_model(ps, X, cal - y)
 
     # Reasons: the four biggest effects on expected value, in euros
     out_rows = []
@@ -394,7 +552,8 @@ def main():
         "model": best, "r2": round(r["r2"], 2), "mae_factor": round(r["mae_factor"], 2),
         "comparison": {n: {"r2": round(v["r2"], 2), "slope": round(v["slope"], 2)} for n, v in results.items()},
         "n": len(ps), "seasons": sorted(ps["season"].unique().tolist()), "features": [FEATURES[f] for f in feats],
-        "a_gap": A_GAP, "b_gap": B_GAP, "max_age": MAX_AGE, "shrink_minutes": SHRINK_MINUTES, "backtest": bt,
+        "value_source": VALUE_SOURCE, "a_gap": A_GAP, "b_gap": B_GAP, "max_age": MAX_AGE, "shrink_minutes": SHRINK_MINUTES, "backtest": bt,
+        "forward": fwd, "growth": growth_stats, "horizon_days": HORIZON_DAYS,
         "a_share_by_price": {str(k): round(float(by_band.loc[k].get("A", 0)), 1) for k in by_band.index},
         "a_share_by_expected": {str(k): round(float(by_expected.loc[k].get("A", 0)), 1) for k in by_expected.index},
     }

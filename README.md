@@ -13,19 +13,25 @@ An interactive dashboard of Eredivisie player statistics, built from FotMob matc
 
 The ⓘ buttons, the percentile tooltips and the table headers explain each metric. All settings, including the open player, are stored in the URL, so a link opens the same view, and the browser's Back button returns to the previous player.
 
-## Updating the data
+## Getting the data
+
+The scraped match data isn't in this repository: FotMob's terms don't allow redistributing it. `data/players.js` and `data/ratings.js`, which the dashboard reads, are included, so the page works without scraping. To rebuild them:
 
 ```bash
-pip install pandas requests
-python scrape.py 2026-2027        # fetch matches that aren't in raw/ yet
-python build_data.py              # rebuild data/players.js from everything in raw/
-pip install scikit-learn
-python value_model.py             # retrain the value model, write data/ratings.js
+pip install pandas requests scikit-learn
+python scrape.py              # matches and player pages for the leagues switched on in leagues.json
+python transfermarkt.py       # Transfermarkt values, matched to the scraped players
+python build_data.py          # data/players.js for the dashboard
+python value_model.py         # retrain the value model, write data/ratings.js
 ```
 
-The scraper is incremental: it only downloads matches that aren't in the season's CSV yet, so a weekly update takes seconds. Every downloaded match page is saved compressed in `cache/` (about 3 MB per 100 matches, not in git). To add a new field to the CSVs, change `parse_player_stats` in `scrape.py` and run `python scrape.py <season> --reparse`, which rebuilds the CSV from the cache without downloading anything. Failed downloads are retried three times, after 2, 4 and 8 seconds.
+`leagues.json` lists the leagues the scraper knows. Set `"scrape": true` to include one; `seasons` are shown in the dashboard and graded by the model, `history` seasons only feed the model's last-season features. The dashboard and the model use `dashboard_league`. Each league gets its own folder, `raw/<league>/`, with a `matches_<season>.csv` and an `unavailable_<season>.csv` (injured and suspended players) per season. Player pages go to `raw/players/` and are shared between leagues, so a player who played in two leagues is stored once.
 
-A full season from scratch takes 10-15 minutes, because the scraper waits one second between downloads. `python scrape.py 2022-2023 --history` writes to `raw_history/`, which the value model reads for last-season features but the dashboard doesn't show.
+Every save merges with the existing file and drops duplicates on a key: match and player for matches, player for player info, player and date for the value history. Running the scraper twice, or for two leagues with the same player, never creates double rows.
+
+Useful options: `--league eredivisie` or `--season 2026-2027` to limit a run, `--no-players` or `--players-only`, and `--reparse` to rebuild the CSVs from the cache after changing what the parser extracts. The scraper is incremental: it only downloads matches that aren't in the CSV yet and player pages older than 30 days, so a weekly update takes a few minutes. Downloaded pages are kept compressed in `cache/`. Failed downloads are retried after 2, 4 and 8 seconds. A full season from scratch takes 10-15 minutes, and the player pages for one league about an hour.
+
+`transfermarkt.py` downloads the open [transfermarkt-datasets](https://github.com/dcaribou/transfermarkt-datasets) (CC0) rather than scraping transfermarkt.com. FotMob and Transfermarkt use different player ids, so players are matched on date of birth plus a similar name, or an identical name born in the same year when the two sites disagree on the birthday. Over 99% of players match. The dataset's updates were paused in mid-2026; its last values are from June 2026.
 
 ## Positions
 
@@ -39,19 +45,23 @@ FotMob records the formation slot each starter played in. `build_data.py` maps t
 - **Club reputation:** the average market value of his teammates that season, excluding himself.
 - **Last season:** FotMob rating and share of minutes in the previous Eredivisie season, plus a flag for players without one. 2022-23 is scraped for this purpose only.
 
-Adding club reputation and last season raised the out-of-fold R² from 0.72 to 0.81. It trains on one row per player per season, pooling every season in `raw/`.
+Adding club reputation and last season raised the out-of-fold R² from 0.72 to 0.83. It trains on one row per player per season, pooling the league's seasons.
 
 - **Shrinkage.** Per-90 stats and the FotMob rating are pulled towards the position average for that season. A player's own numbers count for minutes / (minutes + 450), so half at 450 minutes and about 86% over a full season. Of the weights tested (0, 450, 900, 1,800 and 3,600 minutes), 450 gave the best out-of-fold R².
 - **Out-of-fold predictions.** Players are split into five folds, and each player's value comes from a model trained without any of his seasons. The split is repeated five times and averaged.
-- **Data checks.** FotMob stores no market value for many matches before 2025-26, so a player-season needs at least three value observations, and an age. That leaves 871 player-seasons across 2023-24 to 2026-27.
-- **Three models.** Ridge regression, a random forest and gradient boosting are all evaluated. A tree model only replaces the ridge regression if its out-of-fold R² is at least 0.02 higher, because tree models can't extrapolate beyond the prices they have seen (the forest's calibration slope is 1.11: its predictions are squeezed towards the average price). On the current data the ridge regression is used: R² 0.81 and a typical error of ×1.54, against 0.82 for gradient boosting and 0.79 for the forest. The chosen model gets a linear calibration.
+- **Market values.** Each player-season uses the value nearest to the season's last match, from the value history on the player's FotMob page (SciSports estimates, monthly in recent years). A player-season also needs an age and enough minutes, which leaves 921 player-seasons across 2023-24 to 2026-27.
+- **Three models.** Ridge regression, a random forest and gradient boosting are all evaluated. A tree model only replaces the ridge regression if its out-of-fold R² is at least 0.02 higher, because tree models can't extrapolate beyond the prices they have seen (the forest's calibration slope is 1.11: its predictions are squeezed towards the average price). On the current data the ridge regression is used: R² 0.83 and a typical error of ×1.48, against 0.84 for gradient boosting and 0.80 for the forest. The chosen model gets a linear calibration.
 - **Grades.** A needs an expected value at least 2× the actual value, B at least 1.25×. Both also need a FotMob rating at or above the median for the position and an age of 27 or younger. Older players who meet the other conditions get a C with a note.
-- **Backtest.** R² only measures how well the model explains today's prices. The real question is whether an "undervalued" player's price goes up afterwards, so the script follows every graded player to the next season. The grade rules come from this test: a gap predicted nothing for players rated below their position's median, or older than 27 (about 20% of those rose), or with a gap under ×1.25. With the current rules, 100% of A players and 73% of B players rose in value the next season, against 46% of C players, and the order A > B > C held in every season separately. Players sold abroad or relegated can't be followed, so the test covers only players who stayed in the Eredivisie.
+- **Backtest.** R² only measures how well the model explains today's prices. The real question is whether an "undervalued" player's price goes up afterwards, so the script compares each graded player's value with his value 365 days later. The value history follows players wherever they go, including those sold abroad or relegated. The grade rules come from this test: a gap predicted nothing for players rated below their position's median (31% rose, the same as C) or older than 27 (21%). With the current rules, 9 of 10 A players rose in value, against 50% of B players and 27% of C players, and the order A > B > C held in every season separately. B's edge comes mostly from being good and young: good young players without a gap rose 43% of the time. A gap of ×2 or more is where the model adds the most.
+- **Forward test.** Trained only on earlier seasons and tested on the next, the model reaches R² 0.78-0.82. For 2024-25, the first season with a known outcome, the gap correlates +0.24 with the later value change.
+- **Growth model.** A second model predicts the value change directly from the features, the gap and the current value. It did no better than age and gap alone (correlation +0.36 against +0.37), so the grades keep the simpler rules.
+- **Transfermarkt.** `python value_model.py --source transfermarkt` uses Transfermarkt values instead. Transfermarkt prices are explained slightly better (R² 0.86), but the gap predicts their later change much worse (backtest correlation +0.05, against +0.16 for SciSports). Transfermarkt values follow transfers that have already happened and change about twice a year, so there's less for the model to anticipate.
+- **Extra features.** `feature_test.py` tests candidate features against the backtest: touches, times dispossessed, fouls won, recoveries and long balls (aimed at central midfielders), international caps before the season, and height. None changed the backtest by more than 0.003, so none was added.
 - **Position.** Four position-aware variants were tested against the backtest: stats relative to the position average, separate weights per position line, only position-relevant stats, and gradient boosting. None of them improved the backtest, because position is already a feature: the model learns that centre backs rarely dribble. The gap predicts least for central midfielders (correlation +0.1, against +0.5 for strikers), probably because what makes them valuable (positioning, press resistance) isn't in FotMob's stats.
 - **Price bias.** The script prints the grade mix per band of expected value and per band of actual price. Cheap players still get more A and B grades, partly through regression to the mean: the gap correlates with actual price at −√(1 − R²).
 - **Reasons.** For each feature, the script sets it to the median for the player's position and records how much the expected value drops. The largest effects become the explanation shown in the dashboard.
 
-Contract length, injury history and international reputation are not in the data, and they explain part of every gap.
+Contract length and injury history are not in the model, and they explain part of every gap. FotMob's player page shows only the current contract, which says nothing about earlier seasons, and its injury lists are too incomplete to use.
 
 ## Files
 
@@ -59,8 +69,10 @@ Contract length, injury history and international reputation are not in the data
 |---|---|
 | `index.html`, `style.css`, `app.js` | The dashboard |
 | `data/players.js` | One row per player per match, generated by `build_data.py` |
-| `raw/` | Scraped CSVs, one per season |
-| `raw_history/` | Older seasons, used only for the model's last-season features |
-| `scrape.py` | FotMob scraper |
+| `data/ratings.js` | Value grades and reasons, generated by `value_model.py` |
+| `leagues.json` | Which leagues and seasons to scrape |
+| `scrape.py` | FotMob scraper: matches and player pages, into `raw/` (not in git) |
+| `transfermarkt.py` | Transfermarkt values from transfermarkt-datasets, matched to FotMob players |
 | `build_data.py` | Turns the raw CSVs into `data/players.js` |
 | `value_model.py` | Trains the value model and writes `data/ratings.js` |
+| `feature_test.py` | Tests candidate features against the backtest |

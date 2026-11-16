@@ -646,9 +646,13 @@ function drawValue() {
   for (const t of [
     `Grade A: expected value at least ${m.a_gap}× the actual value. B: at least ${m.b_gap}×. Both also need a FotMob rating at or above the median ` +
       `for his position and an age of ${m.max_age} or younger. C: the rest. These rules come from a backtest: they're the ones that predicted a player's value rising.`,
-    `Backtest, value change to the next season for players still in the Eredivisie: ` +
+    `Backtest, value change in the ${m.horizon_days} days after the season, following players wherever they went: ` +
       ["A", "B", "C"].filter(g => m.backtest[g]).map(g => `${g} ${m.backtest[g].rose}% rose (median ×${m.backtest[g].median}, n=${m.backtest[g].n})`).join(", ") +
-      `. Players sold abroad or relegated can't be followed, so this is a partial check.`,
+      `. Most of B's edge comes from being good and young; a gap of ${m.a_gap}× or more is where the model adds the most.`,
+    `Forward test, trained only on earlier seasons: ` +
+      Object.entries(m.forward).map(([s, f]) => `${seasonLabel(s)} R² ${f.r2}` + (f.backtest_corr !== null ? ` (gap vs later value change: ${f.backtest_corr > 0 ? "+" : ""}${f.backtest_corr})` : "")).join(", ") + `.`,
+    `Market values: ${m.value_source === "transfermarkt" ? "Transfermarkt" : "SciSports (via FotMob)"}. ` +
+      `Transfermarkt values were also tested: they're explained slightly better, but the gap predicted their later change much worse.`,
     `Features: ${m.features.join(", ")}, plus position.`,
     `Per-90 stats and rating are pulled towards the position average, more strongly for players with fewer minutes: ` +
       `a player's own numbers count for minutes / (minutes + ${m.shrink_minutes}), so half at ${m.shrink_minutes} minutes and about 86% over a full season. ` +
@@ -657,7 +661,7 @@ function drawValue() {
     `Model comparison: ${Object.entries(m.comparison).map(([n, c]) => `${n} R² ${c.r2}`).join(", ")}. A tree model only replaces the linear one when it's at least 0.02 better, ` +
       `because tree models can't extrapolate beyond the prices they've seen. The chosen model is calibrated so predictions aren't squeezed towards the average price.`,
     `Share of A grades by expected value: ${Object.entries(m.a_share_by_expected).map(([b, v]) => `${b} ${v}%`).join(", ")}. By actual price: ${Object.entries(m.a_share_by_price).map(([b, v]) => `${b} ${v}%`).join(", ")}. Cheap players get more A grades partly by construction: with a typical error of ×${m.mae_factor}, some cheap players look undervalued through noise alone.`,
-    `Market value doesn't capture everything: contract length, injuries and reputation abroad aren't in the data, and they explain part of every gap.`,
+    `Market value doesn't capture everything: contract length and injuries aren't in the model, and they explain part of every gap.`,
   ]) ul.append(el("li", null, t));
   method.append(ul);
 }

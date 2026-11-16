@@ -74,6 +74,7 @@ h3 { font-size: 14px; margin: 16px 0 0; }
 .sub-head h3 { margin: 0; }
 .meta, .sub { color: var(--text-secondary); margin: 4px 0 0; }
 .sub { font-size: 13px; }
+.sources { margin-top: 24px; color: var(--text-secondary); }
 
 .filters { display: flex; flex-wrap: wrap; gap: 12px 20px; margin: 20px 0; }
 label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 13px; }
