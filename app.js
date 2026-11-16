@@ -515,7 +515,8 @@ function ratingSummary(r) {
   const strong = r.reasons.filter(x => x.effect > 0 && !x.context && x.pct >= 50).slice(0, 2).map(x => FEATURE_SHORT[x.feature]);
   const role = ROLES[r.role][0].toLowerCase();
   const lead = strong.length ? `High ${strong.join(" and ")} for a ${role}` : `Profile of a ${role}`;
-  return `${lead}, valued at ${fmt(M.value, r.value)}, model expects ${fmt(M.value, r.expected)} (${r.gap.toFixed(1)}×).`;
+  const capped = r.too_old ? ` A on performance, but A requires age ${RATINGS.meta.a_max_age} or younger (he's ${r.age}).` : "";
+  return `${lead}, valued at ${fmt(M.value, r.value)}, model expects ${fmt(M.value, r.expected)} (${r.gap.toFixed(1)}×).${capped}`;
 }
 
 function reasonLine(r, x) {
@@ -562,7 +563,8 @@ function drawValue() {
 
   drawValueChart(data);
 
-  const list = d3.sort(data.filter(d => d.r.grade !== "C"), d => -d.r.gap).slice(0, 25);
+  // A before B, each by biggest gap, so players capped at B for age don't push the A grades down
+  const list = d3.sort(data.filter(d => d.r.grade !== "C"), d => d.r.grade, d => -d.r.gap).slice(0, 25);
   document.getElementById("vr-list").replaceChildren(...(list.length ? list.map(({ r, p, name }) => {
     const li = el("li");
     const body = el("div");
@@ -577,9 +579,13 @@ function drawValue() {
     `A model predicts each player's market value from performance and context, then compares that with his actual value.`));
   const ul = el("ul");
   for (const t of [
-    `Grade A: expected value at least ${m.a_gap}× the actual value, and a FotMob rating at or above the median for his position. B: at least ${m.b_gap}×. C: the rest.`,
+    `Grade A: expected value at least ${m.a_gap}× the actual value, a FotMob rating at or above the median for his position, and age ${m.a_max_age} or younger. ` +
+      `An older player's low price mostly reflects the few seasons he has left, so he gets at most a B. B: at least ${m.b_gap}×. C: the rest.`,
     `Features: ${m.features.join(", ")}, plus position.`,
-    `Trained on ${m.n} player-seasons from both seasons. Every prediction is out-of-fold: the model that predicts a player never saw any of his seasons.`,
+    `Per-90 stats and rating are pulled towards the position average, more strongly for players with fewer minutes: ` +
+      `a player's own numbers count for minutes / (minutes + ${m.shrink_minutes}), so half at ${m.shrink_minutes} minutes and about 86% over a full season. ` +
+      `This stops a good spell of a few matches from producing a big gap. The reasons show the player's actual numbers.`,
+    `Trained on ${m.n} player-seasons from ${m.seasons.length} seasons (${m.seasons.map(seasonLabel).join(", ")}). Every prediction is out-of-fold: the model that predicts a player never saw any of his seasons.`,
     `Model comparison: ${Object.entries(m.comparison).map(([n, c]) => `${n} R² ${c.r2}`).join(", ")}. The better one is used, calibrated so predictions aren't squeezed towards the average price.`,
     `Share of A grades by expected value: ${Object.entries(m.a_share_by_expected).map(([b, v]) => `${b} ${v}%`).join(", ")}. By actual price: ${Object.entries(m.a_share_by_price).map(([b, v]) => `${b} ${v}%`).join(", ")}. Cheap players get more A grades partly by construction: with a typical error of ×${m.mae_factor}, some cheap players look undervalued through noise alone.`,
     `Market value doesn't capture everything: contract length, injuries and reputation abroad aren't in the data, and they explain part of every gap.`,
@@ -634,7 +640,9 @@ function drawValueChart(data) {
   svg.append("g").selectAll("circle").data(selDs).join("circle")
     .attr("cx", d => x(d.r.value)).attr("cy", d => y(d.r.expected)).attr("r", 6)
     .attr("fill", "var(--highlight)").attr("stroke", "var(--surface-1)").attr("stroke-width", 2);
-  const labelled = [...d3.sort(data.filter(d => d.r.grade === "A" && d.p !== sel), d => -d.r.gap).slice(0, 3), ...selDs];
+  // With several seasons the top A grades crowd together, so then only the selected player is labelled
+  const topA = data.length > 300 ? [] : d3.sort(data.filter(d => d.r.grade === "A" && d.p !== sel), d => -d.r.gap).slice(0, 3);
+  const labelled = [...topA, ...selDs];
   svg.append("g").selectAll("text").data(labelled).join("text")
     .attr("class", d => d.p === sel ? "label-strong halo" : "halo")
     .attr("x", d => x(d.r.value)).attr("y", d => y(d.r.expected)).attr("dx", 9).attr("dy", "0.32em").text(d => d.name);

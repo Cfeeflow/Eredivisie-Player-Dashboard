@@ -29,11 +29,14 @@ FotMob records the formation slot each starter played in. `build_data.py` maps t
 
 ## Value rating
 
-`value_model.py` predicts each outfield player's log market value from 13 features (age, share of minutes, team points per game, FotMob rating, Dutch nationality and eight per-90 or accuracy stats) plus position. It trains on one row per player per season, pooling both seasons.
+`value_model.py` predicts each outfield player's log market value from 13 features (age, share of minutes, team points per game, FotMob rating, Dutch nationality and eight per-90 or accuracy stats) plus position. It trains on one row per player per season, pooling every season in `raw/`.
+
+- **Shrinkage.** Per-90 stats and the FotMob rating are pulled towards the position average for that season. A player's own numbers count for minutes / (minutes + 450), so half at 450 minutes and about 86% over a full season. Of the weights tested (0, 450, 900, 1,800 and 3,600 minutes), 450 gave the best out-of-fold R².
 
 - **Out-of-fold predictions.** Players are split into five folds, and each player's value comes from a model trained without any of his seasons. The split is repeated five times and averaged.
-- **Two models.** A random forest and a ridge regression are both evaluated, and the one with the higher out-of-fold R² is used. On the current data that's the ridge regression (R² 0.68 vs 0.66, typical error ×1.73). The forest's predictions are squeezed towards the average price (calibration slope 1.18), so both get a linear calibration.
-- **Grades.** A needs an expected value at least 2× the actual value and a FotMob rating at or above the median for the position. B needs at least 1.5×. Both thresholds sit above the model's typical error, so a grade isn't triggered by noise alone.
+- **Data checks.** FotMob stores no market value for many matches before 2025-26, so a player-season needs at least three value observations, and an age. That leaves 871 player-seasons across 2023-24 to 2026-27.
+- **Two models.** A random forest and a ridge regression are both evaluated. The forest only replaces the ridge regression if its out-of-fold R² is at least 0.02 higher, because it can't extrapolate beyond the prices it has seen: its predictions are squeezed towards the average price (calibration slope 1.15). On the current data the ridge regression is used (R² 0.72 vs 0.73, typical error ×1.69). Both get a linear calibration.
+- **Grades.** A needs an expected value at least 2× the actual value, a FotMob rating at or above the median for the position, and an age of 30 or younger. B needs at least 1.5×. Both thresholds sit above the model's typical error, so a grade isn't triggered by noise alone. Players over 30 who meet the other A conditions get a B with a note: their low price mostly reflects how few seasons they have left, which makes them poor resale buys.
 - **Price bias.** The script prints the grade mix per band of expected value and per band of actual price. Cheap players still get more A and B grades, partly through regression to the mean: the gap correlates with actual price at −√(1 − R²).
 - **Reasons.** For each feature, the script sets it to the median for the player's position and records how much the expected value drops. The largest effects become the explanation shown in the dashboard.
 

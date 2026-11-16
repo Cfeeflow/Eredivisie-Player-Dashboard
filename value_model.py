@@ -4,12 +4,15 @@ Usage: python value_model.py
 Reads raw/*.csv, writes data/ratings.js and prints the model checks.
 
 How it works
-1. One row per player per season (both seasons pooled), outfield players with enough minutes.
+1. One row per player per season (all seasons pooled), outfield players with enough minutes. Per-90 stats and
+   rating are shrunk towards the role average, more so for players with fewer minutes.
 2. Predict log(market value) from performance and context. Every prediction is out-of-fold: the model that
    predicts a player never saw any of his seasons (folds are split by player, repeated with different splits).
-3. Random forest vs a linear (ridge) baseline on the same features; the better one by out-of-fold R² is used,
-   after a linear calibration so predictions aren't compressed towards the average price.
-4. Gap = expected value / actual value. A: gap >= 2 and FotMob rating at or above the median for his role.
+3. Random forest vs a linear (ridge) baseline on the same features. The linear model is used unless the forest
+   is clearly better by out-of-fold R²; both get a linear calibration so predictions aren't compressed towards
+   the average price.
+4. Gap = expected value / actual value. A: gap >= 2, FotMob rating at or above the median for his role and
+   age 30 or younger (an older player's low price reflects a short career left, not a mistake by the market).
    B: gap >= 1.5. C: the rest.
 5. Reasons: each feature is set to the role median and the change in expected value is that feature's effect.
 """
@@ -30,6 +33,14 @@ HERE = Path(__file__).parent
 OUT = HERE / "data" / "ratings.js"
 
 A_GAP, B_GAP = 2.0, 1.5  # A must clear the typical model error (about ×1.7)
+A_MAX_AGE = 30
+# FotMob stores no market value for many matches before 2025-26; a season's value needs at least this many
+# observations, so one stray number can't drive a grade
+MIN_VALUE_OBS = 3
+# The forest can't extrapolate beyond the prices it has seen, so it only replaces the linear model when clearly better
+RF_MARGIN = 0.02
+SHRINK_MINUTES = 450  # a player's own per-90 numbers weigh minutes / (minutes + 450) against the role average
+SHRUNK = ["rating", "npxg90", "xa90", "final3rd90", "dribbles90", "def90", "aerials90", "passes90", "pass_pct"]
 REPEATS, FOLDS = 5, 5
 ROLES = ["CB", "FB", "CM", "AM", "W", "ST"]
 USUAL_ROLE = {1: "CB", 2: "CM", 3: "ST"}  # fallback for players without a starting slot
@@ -85,7 +96,7 @@ def player_seasons(df):
         if g["goalkeeper"].mean() > 0.5:
             continue
         values = g["market_value"].dropna()
-        if values.empty:
+        if len(values) < MIN_VALUE_OBS or g["age"].isna().all():
             continue
         minutes = g["Minutes played"].sum()
         team = g.groupby("team")["Minutes played"].sum().idxmax()
@@ -119,6 +130,17 @@ def player_seasons(df):
     max_min = ps.groupby("season")["minutes"].transform("max")
     ps = ps[ps["minutes"] >= np.maximum(450, 0.3 * max_min)].reset_index(drop=True)
     ps["min_share"] = ps["min_share"].clip(upper=1)
+    return shrink(ps)
+
+
+def shrink(ps):
+    """Pull per-90 stats and rating towards the season's role average, so 600 good minutes count for less
+    than 2,500. The unshrunk value is kept as <feature>_raw for display."""
+    w = ps["minutes"] / (ps["minutes"] + SHRINK_MINUTES)
+    for f in SHRUNK:
+        ps[f + "_raw"] = ps[f]
+        mean = ps.groupby(["season", "role"])[f].transform("mean")
+        ps[f] = w * ps[f] + (1 - w) * mean
     return ps
 
 
@@ -126,8 +148,8 @@ def design(ps, feats):
     X = ps[feats].copy()
     for r in ROLES:
         X[f"role_{r}"] = (ps["role"] == r).astype(float)
-    latest = ps["season"].max()
-    X["season_latest"] = (ps["season"] == latest).astype(float)  # absorbs a market-wide price shift
+    for s in sorted(ps["season"].unique())[1:]:
+        X[f"season_{s}"] = (ps["season"] == s).astype(float)  # absorbs market-wide price shifts between seasons
     return X
 
 
@@ -200,7 +222,7 @@ def main():
     print(f"  {'model':16} {'R² raw':>7} {'R² calibrated':>14} {'calib. slope':>13} {'typical error':>14}")
     for name, r in results.items():
         print(f"  {name:16} {r['r2_raw']:7.2f} {r['r2']:14.2f} {r['slope']:13.2f} {'×' + format(r['mae_factor'], '.2f'):>14}")
-    best = max(results, key=lambda n: results[n]["r2"])
+    best = "Random forest" if results["Random forest"]["r2"] >= results["Linear (ridge)"]["r2"] + RF_MARGIN else "Linear (ridge)"
     r = results[best]
     print(f"  -> using {best}")
 
@@ -210,7 +232,9 @@ def main():
     ps["expected"] = np.exp(cal)
     ps["gap"] = ps["expected"] / ps["value"]
     ps["rating_pct"] = ps.groupby(["season", "role"])["rating"].rank(pct=True) * 100
-    ps["grade"] = np.where((ps["gap"] >= A_GAP) & (ps["rating_pct"] >= 50), "A", np.where(ps["gap"] >= B_GAP, "B", "C"))
+    a_level = (ps["gap"] >= A_GAP) & (ps["rating_pct"] >= 50)
+    ps["too_old"] = a_level & (ps["age"] > A_MAX_AGE)  # would be A on performance, capped at B by age
+    ps["grade"] = np.where(a_level & ~ps["too_old"], "A", np.where(ps["gap"] >= B_GAP, "B", "C"))
 
     # Price-bias checks: grades should not simply follow price
     bands = ["lowest third", "middle third", "highest third"]
@@ -231,25 +255,29 @@ def main():
 
     # Reasons: the biggest effects on expected value, in euros
     out_rows = []
+    shown = {f: f + "_raw" if f in SHRUNK else f for f in feats}  # reasons show the player's actual numbers
     for i, p in ps.iterrows():
-        pct_in_role = {f: float((ps.loc[(ps["season"] == p["season"]) & (ps["role"] == p["role"]), f] < p[f]).mean() * 100) for f in feats}
+        peers = ps[(ps["season"] == p["season"]) & (ps["role"] == p["role"])]
         reasons = []
         for j in np.argsort(-np.abs(effects[i])):
             eff_eur = p["expected"] - p["expected"] / np.exp(effects[i, j])
             if abs(eff_eur) < 0.03 * p["expected"]:
                 continue
-            reasons.append({"feature": feats[j], "label": FEATURES[feats[j]], "value": None if pd.isna(p[feats[j]]) else round(float(p[feats[j]]), 3),
-                            "pct": round(pct_in_role[feats[j]]), "effect": round(float(eff_eur)), "context": feats[j] in CONTEXT})
+            col = shown[feats[j]]
+            reasons.append({"feature": feats[j], "label": FEATURES[feats[j]], "value": None if pd.isna(p[col]) else round(float(p[col]), 3),
+                            "pct": round(float((peers[col] < p[col]).mean() * 100)), "effect": round(float(eff_eur)), "context": feats[j] in CONTEXT})
             if len(reasons) == 4:
                 break
         out_rows.append({"id": int(p["player_id"]), "season": p["season"], "role": p["role"], "grade": p["grade"],
                          "value": int(p["value"]), "expected": int(round(p["expected"], -3)), "gap": round(float(p["gap"]), 2),
-                         "rating_pct": round(float(p["rating_pct"])), "reasons": reasons})
+                         "rating_pct": round(float(p["rating_pct"])), "age": None if pd.isna(p["age"]) else int(p["age"]),
+                         "minutes": int(p["minutes"]), "too_old": bool(p["too_old"]), "reasons": reasons})
 
     meta = {
         "model": best, "r2": round(r["r2"], 2), "mae_factor": round(r["mae_factor"], 2),
         "comparison": {n: {"r2": round(v["r2"], 2), "slope": round(v["slope"], 2)} for n, v in results.items()},
-        "n": len(ps), "features": [FEATURES[f] for f in feats], "a_gap": A_GAP, "b_gap": B_GAP,
+        "n": len(ps), "seasons": sorted(ps["season"].unique().tolist()), "features": [FEATURES[f] for f in feats],
+        "a_gap": A_GAP, "b_gap": B_GAP, "a_max_age": A_MAX_AGE, "shrink_minutes": SHRINK_MINUTES,
         "a_share_by_price": {str(k): round(float(by_band.loc[k].get("A", 0)), 1) for k in by_band.index},
         "a_share_by_expected": {str(k): round(float(by_expected.loc[k].get("A", 0)), 1) for k in by_expected.index},
     }
@@ -258,7 +286,8 @@ def main():
 
     top = ps[ps["grade"] == "A"].sort_values("gap", ascending=False).head(10)
     print("\nTop A grades:")
-    print(top[["season", "name", "team", "role", "age", "value", "expected", "gap", "rating_pct"]].to_string(index=False))
+    print(top[["season", "name", "team", "role", "age", "minutes", "value", "expected", "gap", "rating_pct"]].to_string(index=False))
+    print(f"\nCapped at B for age > {A_MAX_AGE}: {ps['too_old'].sum()} ({', '.join(ps.loc[ps['too_old'], 'name'] + ' ' + ps.loc[ps['too_old'], 'season'].str[2:4] + '-' + ps.loc[ps['too_old'], 'season'].str[-2:])})")
 
 
 if __name__ == "__main__":
