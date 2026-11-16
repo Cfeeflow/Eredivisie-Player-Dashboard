@@ -14,6 +14,10 @@
     </header>
 
     <div class="filters">
+      <label class="find">Find player
+        <input id="pr-search" list="pr-list" placeholder="Name…" aria-label="Find player">
+      </label>
+      <datalist id="pr-list"></datalist>
       <label>Season <select id="f-season"></select></label>
       <label>From <input type="date" id="f-from"></label>
       <label>To <input type="date" id="f-to"></label>
@@ -37,7 +41,9 @@
         <p class="question" id="ex-question"></p>
         <div class="controls axis-controls">
           <label>X <select id="sc-x"></select></label>
+          <button class="info" type="button" data-select="sc-x" aria-label="What does the X metric mean?">ⓘ</button>
           <label>Y <select id="sc-y"></select></label>
+          <button class="info" type="button" data-select="sc-y" aria-label="What does the Y metric mean?">ⓘ</button>
         </div>
         <div class="suggest" id="ex-suggest"></div>
         <div class="explorer-body">
@@ -60,7 +66,17 @@
           </div>
           <div>
             <h3>Most undervalued</h3>
-            <p class="sub">Grade A and B, biggest gap first. Click a player for the full explanation.</p>
+            <div class="controls list-controls">
+              <label>Grade
+                <select id="vr-grade">
+                  <option value="AB">A and B</option>
+                  <option value="A">Only A</option>
+                  <option value="B">Only B</option>
+                </select>
+              </label>
+              <label>Max. age <select id="vr-age"></select></label>
+            </div>
+            <p class="sub">Biggest gap first; position and team follow the filters at the top. Click a player for the full explanation.</p>
             <ol class="vr-list" id="vr-list"></ol>
           </div>
         </div>
@@ -73,7 +89,10 @@
       <section class="card">
         <div class="card-head">
           <h2>Top 15</h2>
-          <div class="controls"><select id="lb-metric" aria-label="Leaderboard metric"></select></div>
+          <div class="controls">
+            <select id="lb-metric" aria-label="Leaderboard metric"></select>
+            <button class="info" type="button" data-select="lb-metric" aria-label="What does this metric mean?">ⓘ</button>
+          </div>
         </div>
         <p class="sub" id="lb-sub"></p>
         <div class="chart" id="leaderboard"></div>
@@ -83,16 +102,16 @@
         <div class="card-head">
           <h2 id="pr-name">Player</h2>
           <div class="controls">
-            <input id="pr-search" list="pr-list" placeholder="Search player…" aria-label="Search player">
-            <datalist id="pr-list"></datalist>
+            <input id="pr-vs" list="pr-list" placeholder="Compare with player…" aria-label="Compare with player">
+            <button class="chip" id="pr-vs-clear" type="button" hidden>✕ Stop comparing</button>
           </div>
         </div>
         <p class="sub" id="pr-sub"></p>
-        <div class="tiles" id="pr-tiles"></div>
-        <div class="why" id="pr-why"></div>
+        <div id="pr-tiles"></div>
+        <div id="pr-why"></div>
         <div class="card-head sub-head">
           <h3>Percentiles</h3>
-          <label>Compare with
+          <label>Against
             <select id="pr-cmp">
               <option value="role">Same position</option>
               <option value="line">Same line (defenders, midfielders, forwards)</option>
@@ -101,9 +120,11 @@
           </label>
         </div>
         <p class="sub" id="pct-sub"></p>
+        <div class="legend" id="pct-legend"></div>
         <div class="chart" id="percentiles"></div>
         <h3>FotMob rating per match</h3>
-        <p class="sub">The hairline marks the player's average.</p>
+        <p class="sub" id="form-sub"></p>
+        <div class="legend" id="form-legend"></div>
         <div class="chart" id="form"></div>
       </section>
 

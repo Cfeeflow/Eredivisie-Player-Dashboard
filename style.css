@@ -11,6 +11,7 @@
   --series-1: #2a78d6;
   --series-1-track: #cde2fb;
   --highlight: #eb6834;
+  --series-2: #eb6834;
   --grade-a: #184f95;
   --grade-b: #3987e5;
   --grade-c: #86b6ef;
@@ -30,6 +31,7 @@
     --series-1: #3987e5;
     --series-1-track: #184f95;
     --highlight: #d95926;
+    --series-2: #d95926;
     --grade-a: #86b6ef;
     --grade-b: #3987e5;
     --grade-c: #184f95;
@@ -49,6 +51,7 @@
   --series-1: #3987e5;
   --series-1-track: #184f95;
   --highlight: #d95926;
+  --series-2: #d95926;
   --grade-a: #86b6ef;
   --grade-b: #3987e5;
   --grade-c: #184f95;
@@ -114,7 +117,7 @@ input { width: 220px; max-width: 100%; }
 .badge { color: var(--text-secondary); }
 
 .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; color: var(--text-secondary); font-size: 12px; }
-.legend .key { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+.key { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
 .vr-list { list-style: none; padding: 0; margin: 8px 0 0; max-height: 440px; overflow: auto; }
 .vr-list li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 8px; padding: 8px 4px; border-bottom: 1px solid var(--grid); cursor: pointer; }
 .vr-list li:hover { background: var(--page); }
@@ -133,7 +136,7 @@ input { width: 220px; max-width: 100%; }
 .method summary { cursor: pointer; color: var(--text-primary); }
 .method ul { padding-left: 18px; }
 
-.tiles { display: flex; flex-wrap: wrap; gap: 24px; margin-top: 12px; }
+.tiles { display: flex; flex-wrap: wrap; gap: 24px; }
 .tile .label { color: var(--text-secondary); font-size: 12px; }
 .tile .value { font-size: 20px; font-weight: 600; }
 
@@ -167,3 +170,18 @@ tr.selected td { font-weight: 600; }
 .tooltip .tt-row { display: flex; justify-content: space-between; gap: 16px; }
 .tooltip .tt-row span:first-child { color: var(--text-secondary); }
 .tooltip .tt-row span:last-child { color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.find input { width: 200px; }
+.info {
+  font: inherit; font-size: 14px; line-height: 1; color: var(--text-secondary); background: none;
+  border: none; padding: 4px; cursor: help; align-self: center;
+}
+.info:hover, .info:focus-visible { color: var(--text-primary); }
+.tooltip .tt-note { color: var(--text-secondary); margin-top: 6px; max-width: 240px; }
+.list-controls { margin-top: 8px; }
+
+/* Profile: one row of tiles (and one value-rating block) per player when comparing */
+.tile-row { margin-top: 12px; }
+.tile-row .who { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
+.tile-row .tiles { margin-top: 4px; }
+.legend .key.line { width: 14px; height: 2px; border-radius: 1px; vertical-align: 3px; }

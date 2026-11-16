@@ -72,6 +72,48 @@ const METRICS = [
 ];
 const M = Object.fromEntries(METRICS.map(m => [m.key, m]));
 
+// Plain-language definitions, shown behind the ⓘ buttons, in percentile tooltips and on table headers
+const INFO = {
+  goals: "Goals scored.",
+  assists: "The last pass before a teammate scored.",
+  ga: "Goals plus assists.",
+  xg: "Expected goals: each shot gets the probability that an average player scores from that position and situation, and these are added up. Measures the quality of chances a player gets, separate from his finishing.",
+  npxg: "Expected goals without penalties, so regular penalty takers don't look more dangerous than they are.",
+  gmxg: "Goals minus xG. Positive: he scored more than his chances suggest (good finishing, or luck over a short period).",
+  xa: "Expected assists: the xG of the shots that came directly from his passes. Measures chance creation whether or not the teammate scored.",
+  shots: "Shots, on target or not, including blocked shots.",
+  sot: "Shots that would have gone in without the keeper's save.",
+  xg_shot: "Average xG per shot. High means he shoots from good positions; low means many long-range or difficult shots.",
+  chances: "Passes that led directly to a teammate's shot (key passes).",
+  bigchances: "Passes that set up a big chance: a situation where a goal is reasonably expected, such as one-on-one with the keeper.",
+  boxtouches: "Touches of the ball inside the opponent's penalty area.",
+  dribbles: "Times he took the ball past an opponent.",
+  dribble_pct: "Successful dribbles as a share of attempted dribbles.",
+  final3rd: "Completed passes that end in the attacking third of the pitch.",
+  passes: "Completed passes.",
+  pass_pct: "Completed passes as a share of all passes.",
+  longballs: "Completed long passes.",
+  longball_pct: "Completed long passes as a share of all long passes.",
+  crosses: "Completed crosses into the box.",
+  tackles: "Tackles made.",
+  interceptions: "Opponent passes he cut out.",
+  recoveries: "Times he won back a loose ball.",
+  clearances: "Times he cleared the ball away from danger.",
+  blocks: "Shots, crosses or passes he blocked.",
+  duels: "One-on-one contests for the ball won, on the ground and in the air.",
+  aerials: "Headers contested against an opponent and won.",
+  aerial_pct: "Aerial duels won as a share of all aerial duels.",
+  saves: "Shots on target he stopped.",
+  conceded: "Goals conceded while he was on the pitch.",
+  xgot_faced: "Expected goals on target faced: for each shot on target, the chance it goes in based on where it was placed. Measures how hard the shots he faced were.",
+  prevented: "xGOT faced minus goals conceded. Positive: he stopped more than an average keeper would have.",
+  rating: "FotMob's match rating from 0 to 10, calculated from all his stats in the match, averaged over his matches.",
+  value: "Transfer market value as shown by FotMob; the latest value in the selected period.",
+  min: "Minutes played.",
+};
+const PER90_NOTE = "Per 90: the total divided by minutes played, times 90, so players with different playing time can be compared.";
+const metricInfo = (m, mode = state.mode) => INFO[m.key] + (m.type === "count" && mode === "p90" ? " " + PER90_NOTE : "");
+
 const PROFILE_METRICS = {
   att: ["goals", "npxg", "shots", "xg_shot", "xa", "chances", "boxtouches", "dribbles", "final3rd",
         "passes", "pass_pct", "recoveries", "aerials", "aerial_pct"],
@@ -187,9 +229,10 @@ const MIN_OPTIONS = [0, 90, 270, 450, 900, 1350, 1800, 2250];
 const state = {
   season: seasons[0].id, from: seasons[0].start, to: seasons[0].end,
   pos: "out", team: "", minMin: 0, minManual: false, mode: "p90", cmp: "role",
-  view: "finishing", x: "xg", y: "goals", lb: "goals", selectedId: null,
-  sort: { key: "min", desc: true },
+  view: "finishing", x: "xg", y: "goals", lb: "goals", selectedId: null, compareId: null,
+  vrGrade: "AB", vrAge: 99, sort: { key: "min", desc: true },
 };
+const DEFAULTS = structuredClone(state); // the URL only stores what differs from these
 let AGG = [];
 
 // Sum every match row in [from, to] into one record per player.
@@ -232,6 +275,7 @@ function aggregate(from, to) {
 const group = () => state.pos === "line:GK" ? "gk" : "out";
 const metricsFor = g => METRICS.filter(m => m.group === "all" || m.group === g);
 const selected = () => AGG.find(p => p.id === state.selectedId);
+const compared = () => AGG.find(p => p.id === state.compareId && p.id !== state.selectedId);
 const filtered = () => AGG.filter(p => posMatch(p, state.pos) && p.min >= state.minMin && (!state.team || p.teams.includes(state.team)));
 
 // ---------- values & formatting ----------
@@ -265,7 +309,7 @@ const tick = v => Math.abs(v) >= 1000 ? d3.format("~s")(v) : d3.format("~g")(v);
 
 const tip = document.getElementById("tooltip");
 
-function showTip(event, title, rows) {
+function showTip(event, title, rows, note) {
   tip.replaceChildren();
   const t = document.createElement("div");
   t.className = "tt-title";
@@ -279,6 +323,7 @@ function showTip(event, title, rows) {
     row.append(a, b);
     tip.append(row);
   }
+  if (note) tip.append(el("div", "tt-note", note)); // a definition below the values
   tip.hidden = false;
   const r = tip.getBoundingClientRect();
   tip.style.left = Math.min(event.clientX + 14, window.innerWidth - r.width - 8) + "px";
@@ -322,8 +367,19 @@ function truncate(textSel, maxWidth) {
 
 function select(p) {
   state.selectedId = p.id;
+  if (state.compareId === p.id) state.compareId = null; // comparing a player with himself makes no sense
   render();
 }
+
+// Open a player's profile and scroll to it (search box, value list, table rows)
+function openProfile(p) {
+  select(p);
+  document.getElementById("profile").scrollIntoView({ behavior: "smooth" });
+}
+
+// The search boxes show "Name (Team)"; this finds the player behind such a label
+const playerLabel = p => `${p.name} (${p.teams.join(" → ")})`;
+const playerByLabel = text => AGG.find(p => playerLabel(p) === text);
 
 // ---------- explorer ----------
 
@@ -568,15 +624,18 @@ function drawValue() {
   drawValueChart(data);
 
   // A before B, each by biggest gap, so players capped at B for age don't push the A grades down
-  const list = d3.sort(data.filter(d => d.r.grade !== "C"), d => d.r.grade, d => -d.r.gap).slice(0, 25);
+  const list = d3.sort(
+    data.filter(d => d.r.grade !== "C" && state.vrGrade.includes(d.r.grade) && (d.r.age ?? 0) <= state.vrAge),
+    d => d.r.grade, d => -d.r.gap,
+  ).slice(0, 25);
   document.getElementById("vr-list").replaceChildren(...(list.length ? list.map(({ r, p, name }) => {
     const li = el("li");
     const body = el("div");
     body.append(el("div", "who", `${name} · ${r.role} · ${p.teams.join(" → ")}`), el("div", "what", ratingSummary(r)));
     li.append(gradeBadge(r.grade), body);
-    li.addEventListener("click", () => { select(p); document.getElementById("profile").scrollIntoView({ behavior: "smooth" }); });
+    li.addEventListener("click", () => openProfile(p));
     return li;
-  }) : [el("li", null, "No A or B players with the current filters.")]));
+  }) : [el("li", null, "No players match these filters.")]));
 
   const method = document.getElementById("vr-method");
   method.replaceChildren(el("p", null,
@@ -590,7 +649,8 @@ function drawValue() {
       `a player's own numbers count for minutes / (minutes + ${m.shrink_minutes}), so half at ${m.shrink_minutes} minutes and about 86% over a full season. ` +
       `This stops a good spell of a few matches from producing a big gap. The reasons show the player's actual numbers.`,
     `Trained on ${m.n} player-seasons from ${m.seasons.length} seasons (${m.seasons.map(seasonLabel).join(", ")}). Every prediction is out-of-fold: the model that predicts a player never saw any of his seasons.`,
-    `Model comparison: ${Object.entries(m.comparison).map(([n, c]) => `${n} R² ${c.r2}`).join(", ")}. The better one is used, calibrated so predictions aren't squeezed towards the average price.`,
+    `Model comparison: ${Object.entries(m.comparison).map(([n, c]) => `${n} R² ${c.r2}`).join(", ")}. A tree model only replaces the linear one when it's at least 0.02 better, ` +
+      `because tree models can't extrapolate beyond the prices they've seen. The chosen model is calibrated so predictions aren't squeezed towards the average price.`,
     `Share of A grades by expected value: ${Object.entries(m.a_share_by_expected).map(([b, v]) => `${b} ${v}%`).join(", ")}. By actual price: ${Object.entries(m.a_share_by_price).map(([b, v]) => `${b} ${v}%`).join(", ")}. Cheap players get more A grades partly by construction: with a typical error of ×${m.mae_factor}, some cheap players look undervalued through noise alone.`,
     `Market value doesn't capture everything: contract length, injuries and reputation abroad aren't in the data, and they explain part of every gap.`,
   ]) ul.append(el("li", null, t));
@@ -709,96 +769,160 @@ function drawLeaderboard() {
 
 // ---------- profile ----------
 
+// One player: blue, like every single-series chart. Two players: the selected one is orange, matching his
+// highlight in the explorer, value chart and Top 15, and the compared player blue (the two validated slots).
+let PLAYER_COLORS = ["var(--series-1)"];
+
 function percentile(values, v, lowerBetter) {
   const below = values.filter(x => (lowerBetter ? x > v : x < v)).length;
   const equal = values.filter(x => x === v).length;
   return ((below + equal / 2) / values.length) * 100;
 }
 
+function colorKey(i, line) {
+  const k = el("span", line ? "key line" : "key");
+  k.style.background = PLAYER_COLORS[i];
+  return k;
+}
+
+// Legend for two players; empty for one (the card title already names him)
+function playerLegend(id, players, line) {
+  document.getElementById(id).replaceChildren(...(players.length > 1 ? players.map((q, i) => {
+    const s = el("span");
+    s.append(colorKey(i, line), q.name);
+    return s;
+  }) : []));
+}
+
 function drawProfile() {
   const p = selected();
   if (!p) return;
-  document.getElementById("pr-name").textContent = p.name;
-  document.getElementById("pr-sub").textContent =
-    `${posLabel(p)} · ${p.teams.join(" → ")}` + (p.switched ? " ⇄ switched teams in this period" : "");
+  const q = compared();
+  const players = q ? [p, q] : [p];
+  PLAYER_COLORS = q ? ["var(--series-2)", "var(--series-1)"] : ["var(--series-1)"];
+  document.getElementById("pr-name").textContent = q ? `${p.name} vs ${q.name}` : p.name;
+  document.getElementById("pr-vs-clear").hidden = !q;
+  const describe = x => `${posLabel(x)} · ${x.teams.join(" → ")}` + (x.switched ? " ⇄ switched teams in this period" : "");
+  document.getElementById("pr-sub").textContent = q ? "" : describe(p);
 
-  const tiles = [
-    ["Apps", p.apps], ["Minutes", fmt(M.min, p.min)], ["Avg rating", fmt(M.rating, p.rating)],
-    ...(p.line === "GK"
-      ? [["Saves", p.saves], ["Goals prevented", fmt(M.prevented, p.prevented, "total")]]
-      : [["Goals", p.goals], ["Assists", p.assists], ["xG", fmt(M.xg, p.xg, "total")]]),
-    ["Market value", fmt(M.value, p.value)],
-  ];
-  document.getElementById("pr-tiles").replaceChildren(...tiles.map(([k, v]) => {
-    const t = el("div", "tile");
-    t.append(el("div", "label", k), el("div", "value", v));
-    return t;
+  // One row of tiles per player; with two players each row starts with his color and name
+  document.getElementById("pr-tiles").replaceChildren(...players.map((x, i) => {
+    const row = el("div", "tile-row");
+    if (q) {
+      const who = el("div", "who");
+      who.append(colorKey(i), `${x.name} · ${describe(x)}`);
+      row.append(who);
+    }
+    const tiles = el("div", "tiles");
+    tiles.append(...[
+      ["Apps", x.apps], ["Minutes", fmt(M.min, x.min)], ["Avg rating", fmt(M.rating, x.rating)],
+      ...(x.line === "GK"
+        ? [["Saves", x.saves], ["Goals prevented", fmt(M.prevented, x.prevented, "total")]]
+        : [["Goals", x.goals], ["Assists", x.assists], ["xG", fmt(M.xg, x.xg, "total")]]),
+      ["Market value", fmt(M.value, x.value)],
+    ].map(([k, v]) => {
+      const t = el("div", "tile");
+      t.append(el("div", "label", k), el("div", "value", v));
+      return t;
+    }));
+    row.append(tiles);
+    return row;
   }));
 
-  const why = document.getElementById("pr-why");
-  const rs = ratingsFor(p);
-  why.replaceChildren(...rs.flatMap(r => {
-    const text = el("div");
-    const season = rs.length > 1 ? ` ${seasonLabel(r.season)}` : "";
-    text.append(el("div", "summary", `Value rating${season} ${r.grade} (${GRADES[r.grade]}): ${ratingSummary(r)}`));
-    const ul = el("ul");
-    for (const x of r.reasons) ul.append(el("li", null, reasonLine(r, x)));
-    text.append(ul);
-    return [gradeBadge(r.grade), text];
+  // Value rating per player and season
+  document.getElementById("pr-why").replaceChildren(...players.flatMap(x => {
+    const rs = ratingsFor(x);
+    return rs.map(r => {
+      const block = el("div", "why");
+      const text = el("div");
+      const season = rs.length > 1 ? ` ${seasonLabel(r.season)}` : "";
+      text.append(el("div", "summary", `${q ? x.name + ": v" : "V"}alue rating${season} ${r.grade} (${GRADES[r.grade]}): ${ratingSummary(r)}`));
+      const ul = el("ul");
+      for (const reason of r.reasons) ul.append(el("li", null, reasonLine(r, reason)));
+      text.append(ul);
+      block.append(gradeBadge(r.grade), text);
+      return block;
+    });
   }));
 
-  drawPercentiles(p);
-  drawForm(p);
+  drawPercentiles(players);
+  drawForm(players);
 }
 
-function drawPercentiles(p) {
-  // Comparison group: same detailed role (or line when the role is unknown), same line, or all outfield players.
-  // Keepers are always compared with keepers.
-  const cmp = p.line === "GK" ? "line" : state.cmp;
-  document.getElementById("pr-cmp").disabled = p.line === "GK";
-  const same = { role: q => p.role ? q.role === p.role : q.line === p.line, line: q => q.line === p.line, out: q => q.line !== "GK" }[cmp];
-  const pool = AGG.filter(q => q.min >= state.minMin && same(q));
-  const who = cmp === "out" ? "outfield players" : (cmp === "role" && p.role ? ROLES[p.role] : LINES[p.line])[1];
+// Comparison group for one player: same detailed role (or line when the role is unknown), same line, or all
+// outfield players. Keepers are always compared with keepers.
+function comparisonPool(x) {
+  const cmp = x.line === "GK" ? "line" : state.cmp;
+  const same = { role: o => x.role ? o.role === x.role : o.line === x.line, line: o => o.line === x.line, out: o => o.line !== "GK" }[cmp];
+  const who = cmp === "out" ? "outfield players" : (cmp === "role" && x.role ? ROLES[x.role] : LINES[x.line])[1];
+  return { pool: AGG.filter(o => o.min >= state.minMin && same(o)), who };
+}
+
+function drawPercentiles(players) {
+  const [p] = players;
+  document.getElementById("pr-cmp").disabled = players.every(x => x.line === "GK");
+  const groups = players.map(comparisonPool);
+  const below = players.filter(x => x.min < state.minMin).map(x => x.name);
+  const against = groups.length > 1 && groups[0].who !== groups[1].who
+    ? players.map((x, i) => `${x.name} vs ${groups[i].pool.length} ${groups[i].who}`).join(", ")
+    : `vs ${groups[0].pool.length} ${groups[0].who}`;
   document.getElementById("pct-sub").textContent =
-    `Per 90 where it applies, vs ${pool.length} ${who} with at least ${state.minMin} minutes in this period` +
-    (p.min < state.minMin ? `. ${p.name} is below that threshold, so treat these as rough.` : ".");
+    `Per 90 where it applies, ${against} with at least ${state.minMin} minutes in this period` +
+    (below.length ? `. ${below.join(" and ")} ${below.length > 1 ? "are" : "is"} below that threshold, so treat these as rough.` : ".");
+  playerLegend("pct-legend", players, false);
 
-  const rows = PROFILE_METRICS[profileSet(p)].map(k => M[k]).map(m => {
-    const v = val(p, m, "p90");
-    const vals = pool.map(q => val(q, m, "p90")).filter(x => x != null);
-    return { m, v, pct: v == null || !vals.length ? null : percentile(vals, v, m.lowerBetter) };
-  });
+  // The metric list follows the first player's position
+  const rows = PROFILE_METRICS[profileSet(p)].map(k => M[k]).map(m => ({
+    m,
+    bars: players.map((x, i) => {
+      const v = val(x, m, "p90");
+      const vals = groups[i].pool.map(o => val(o, m, "p90")).filter(o => o != null);
+      return { x, v, pct: v == null || !vals.length ? null : percentile(vals, v, m.lowerBetter) };
+    }),
+  }));
 
-  const rowH = 24, barH = 14;
+  const n = players.length;
+  const rowH = n > 1 ? 34 : 24, barH = n > 1 ? 11 : 14, gap = 2;
   const { svg, width } = svgIn("percentiles", rows.length * rowH);
   const labelW = Math.min(190, width * 0.42), valueW = 40;
   const x = d3.scaleLinear([0, 100], [labelW + 8, width - valueW]);
+  const barY = i => (rowH - (n * barH + (n - 1) * gap)) / 2 + i * (barH + gap); // bars stacked within the row
 
   const g = svg.selectAll("g").data(rows).join("g").attr("transform", (d, i) => `translate(0,${i * rowH})`);
   g.append("text").attr("x", labelW).attr("y", rowH / 2).attr("dy", "0.32em").attr("text-anchor", "end")
     .text(d => d.m.label + (d.m.lowerBetter ? " (fewer is better)" : "")).call(truncate, labelW - 4);
-  g.append("rect").attr("x", x(0)).attr("y", (rowH - barH) / 2).attr("width", x(100) - x(0)).attr("height", barH)
+  const bar = g.selectAll("g.bar").data(d => d.bars.map((b, i) => ({ ...b, i }))).join("g").attr("class", "bar");
+  bar.append("rect").attr("x", x(0)).attr("y", b => barY(b.i)).attr("width", x(100) - x(0)).attr("height", barH)
     .attr("rx", 4).attr("fill", "var(--series-1-track)").attr("opacity", 0.45);
-  g.filter(d => d.pct != null).append("path")
-    .attr("d", d => barPath(x(0), x(Math.max(d.pct, 1)), (rowH - barH) / 2, barH)).attr("fill", "var(--series-1)");
-  g.append("text").attr("class", "label-strong").attr("x", width - valueW + 8).attr("y", rowH / 2).attr("dy", "0.32em")
-    .text(d => d.pct == null ? "–" : Math.round(d.pct));
+  bar.filter(b => b.pct != null).append("path")
+    .attr("d", b => barPath(x(0), x(Math.max(b.pct, 1)), barY(b.i), barH)).attr("fill", b => PLAYER_COLORS[b.i]);
+  bar.append("text").attr("class", "label-strong").attr("x", width - valueW + 8).attr("y", b => barY(b.i) + barH / 2).attr("dy", "0.32em")
+    .style("font-size", n > 1 ? "11px" : null).text(b => b.pct == null ? "–" : Math.round(b.pct));
   g.append("rect").attr("width", width).attr("height", rowH).attr("fill", "transparent")
-    .on("pointermove", (event, d) => showTip(event, d.m.label, [
-      ["Percentile", d.pct == null ? "–" : Math.round(d.pct)],
-      [d.m.type === "count" ? "Per 90" : "Value", fmt(d.m, d.v, "p90")],
-      ...(d.m.type === "count" ? [["Total", fmt(d.m, val(p, d.m, "total"), "total")]] : []),
-    ]))
+    .on("pointermove", (event, d) => showTip(event, d.m.label,
+      d.bars.flatMap(b => {
+        const name = n > 1 ? `${b.x.name}: ` : "";
+        return [
+          [name + "percentile", b.pct == null ? "–" : Math.round(b.pct)],
+          [name + (d.m.type === "count" ? "per 90" : "value"), fmt(d.m, b.v, "p90")],
+        ];
+      }),
+      metricInfo(d.m, "p90")))
     .on("pointerleave", hideTip);
 }
 
-function drawForm(p) {
-  const data = p.matches.filter(m => m.rating != null).map(m => ({ ...m, d: new Date(m.date) }));
+function drawForm(players) {
+  const series = players.map((x, i) => x.matches.filter(m => m.rating != null).map(m => ({ ...m, d: new Date(m.date), x, i })));
+  const all = d3.sort(series.flat(), d => d.d);
+  const single = players.length === 1;
+  document.getElementById("form-sub").textContent = single ? "The hairline marks the player's average." : "One line per player.";
+  playerLegend("form-legend", players, true);
+
   const height = 260;
   const { svg, width } = svgIn("form", height);
   const mg = { top: 20, right: 44, bottom: 28, left: 36 };
   const x = d3.scaleTime([new Date(state.from), new Date(state.to)], [mg.left, width - mg.right]);
-  const y = d3.scaleLinear([Math.min(5, d3.min(data, d => d.rating) ?? 5), 10], [height - mg.bottom, mg.top]);
+  const y = d3.scaleLinear([Math.min(5, d3.min(all, d => d.rating) ?? 5), 10], [height - mg.bottom, mg.top]);
 
   svg.append("g").attr("class", "gridline").attr("transform", `translate(${mg.left},0)`)
     .call(d3.axisLeft(y).ticks(5).tickSize(-(width - mg.left - mg.right)).tickFormat(""));
@@ -806,43 +930,51 @@ function drawForm(p) {
     .call(d3.axisBottom(x).ticks(Math.max(2, Math.floor(width / 90))).tickFormat(d3.timeFormat("%-d %b")).tickSizeOuter(0));
   svg.append("g").attr("class", "axis").attr("transform", `translate(${mg.left},0)`)
     .call(d3.axisLeft(y).ticks(5).tickSizeOuter(0));
-  if (!data.length) return;
+  if (!all.length) return;
 
-  // Mark the first match for each new team
-  if (p.switched) {
-    const firsts = p.teams.slice(1).map(t => p.matches.find(m => m.team === t));
-    const g = svg.append("g").selectAll("g").data(firsts).join("g")
-      .attr("transform", m => `translate(${x(new Date(m.date))},0)`);
-    g.append("line").attr("y1", mg.top - 6).attr("y2", height - mg.bottom).attr("stroke", "var(--text-muted)");
-    g.append("text").attr("class", "halo").attr("x", 4).attr("y", mg.top - 8).text(m => "→ " + m.team);
+  if (single) {
+    const p = players[0], data = series[0];
+    // Mark the first match for each new team
+    if (p.switched) {
+      const firsts = p.teams.slice(1).map(t => p.matches.find(m => m.team === t));
+      const g = svg.append("g").selectAll("g").data(firsts).join("g")
+        .attr("transform", m => `translate(${x(new Date(m.date))},0)`);
+      g.append("line").attr("y1", mg.top - 6).attr("y2", height - mg.bottom).attr("stroke", "var(--text-muted)");
+      g.append("text").attr("class", "halo").attr("x", 4).attr("y", mg.top - 8).text(m => "→ " + m.team);
+    }
+    const avg = d3.mean(data, d => d.rating);
+    svg.append("line").attr("x1", mg.left).attr("x2", width - mg.right).attr("y1", y(avg)).attr("y2", y(avg)).attr("stroke", "var(--text-muted)");
+    svg.append("text").attr("x", width - mg.right + 4).attr("y", y(avg)).attr("dy", "0.32em").text(avg.toFixed(2));
   }
 
-  const avg = d3.mean(data, d => d.rating);
-  svg.append("line").attr("x1", mg.left).attr("x2", width - mg.right).attr("y1", y(avg)).attr("y2", y(avg)).attr("stroke", "var(--text-muted)");
-  svg.append("text").attr("x", width - mg.right + 4).attr("y", y(avg)).attr("dy", "0.32em").text(avg.toFixed(2));
+  for (const data of series) {
+    if (!data.length) continue;
+    const color = PLAYER_COLORS[data[0].i];
+    svg.append("path").datum(data).attr("d", d3.line(d => x(d.d), d => y(d.rating)))
+      .attr("fill", "none").attr("stroke", color).attr("stroke-width", 2)
+      .attr("stroke-linejoin", "round").attr("stroke-linecap", "round");
+    svg.append("g").selectAll("circle").data(data).join("circle")
+      .attr("cx", d => x(d.d)).attr("cy", d => y(d.rating)).attr("r", 4)
+      .attr("fill", color).attr("stroke", "var(--surface-1)").attr("stroke-width", 2);
+  }
 
-  svg.append("path").datum(data).attr("d", d3.line(d => x(d.d), d => y(d.rating)))
-    .attr("fill", "none").attr("stroke", "var(--series-1)").attr("stroke-width", 2)
-    .attr("stroke-linejoin", "round").attr("stroke-linecap", "round");
-  svg.append("g").selectAll("circle").data(data).join("circle")
-    .attr("cx", d => x(d.d)).attr("cy", d => y(d.rating)).attr("r", 4)
-    .attr("fill", "var(--series-1)").attr("stroke", "var(--surface-1)").attr("stroke-width", 2);
-
-  // Crosshair snapping to the nearest match
+  // Crosshair snapping to the nearest match date; with two players on the same date, the one nearest the pointer
   const cross = svg.append("line").attr("y1", mg.top).attr("y2", height - mg.bottom).attr("stroke", "var(--axis)").attr("visibility", "hidden");
-  const focus = svg.append("circle").attr("r", 6).attr("fill", "var(--series-1)")
-    .attr("stroke", "var(--surface-1)").attr("stroke-width", 2).attr("visibility", "hidden");
+  const focus = svg.append("circle").attr("r", 6).attr("stroke", "var(--surface-1)").attr("stroke-width", 2).attr("visibility", "hidden");
   const bisect = d3.bisector(d => d.d).center;
   svg.append("rect").attr("x", mg.left).attr("y", mg.top)
     .attr("width", width - mg.left - mg.right).attr("height", height - mg.top - mg.bottom).attr("fill", "transparent")
     .on("pointermove", event => {
-      const d = data[bisect(data, x.invert(d3.pointer(event)[0]))];
+      const [px, py] = d3.pointer(event);
+      const near = all[bisect(all, x.invert(px))];
+      const d = d3.least(all.filter(o => +o.d === +near.d), o => Math.abs(y(o.rating) - py));
       cross.attr("x1", x(d.d)).attr("x2", x(d.d)).attr("visibility", "visible");
-      focus.attr("cx", x(d.d)).attr("cy", y(d.rating)).attr("visibility", "visible");
+      focus.attr("cx", x(d.d)).attr("cy", y(d.rating)).attr("fill", PLAYER_COLORS[d.i]).attr("visibility", "visible");
       const rows = [["Rating", d.rating.toFixed(2)], ["Minutes", d.min]];
       if (d.goals) rows.push(["Goals", d.goals]);
       if (d.assists) rows.push(["Assists", d.assists]);
-      showTip(event, `${fmtDate(d.date)} · ${p.switched ? d.team + " " : ""}vs ${d.opp}`, rows);
+      const who = single ? "" : d.x.name + " · ";
+      showTip(event, `${who}${fmtDate(d.date)} · ${d.x.switched ? d.team + " " : ""}vs ${d.opp}`, rows);
     })
     .on("pointerleave", () => { cross.attr("visibility", "hidden"); focus.attr("visibility", "hidden"); hideTip(); });
 }
@@ -876,6 +1008,7 @@ function drawTable() {
   const hr = thead.insertRow();
   for (const c of cols) {
     const th = el("th", c.key === state.sort.key ? "sorted" : null, c.label);
+    if (M[c.key]) th.title = metricInfo(M[c.key]); // hover a header to see what the column means
     th.addEventListener("click", () => {
       state.sort = { key: c.key, desc: c.key === state.sort.key ? !state.sort.desc : !c.text };
       drawTable();
@@ -888,10 +1021,7 @@ function drawTable() {
     const tr = tbody.insertRow();
     if (p === sel) tr.className = "selected";
     for (const c of cols) tr.insertCell().textContent = c.f ? c.f(c.get(p), p) : c.get(p);
-    tr.addEventListener("click", () => {
-      select(p);
-      document.getElementById("profile").scrollIntoView({ behavior: "smooth" });
-    });
+    tr.addEventListener("click", () => openProfile(p));
   }
   document.getElementById("table").replaceChildren(thead, tbody);
 }
@@ -934,8 +1064,12 @@ function syncControls() {
   if (state.team && !teams.includes(state.team)) state.team = "";
   fillSelect("f-team", [["", "All teams"], ...teams.map(t => [t, t])], state.team);
 
-  document.getElementById("pr-list").replaceChildren(
-    ...d3.sort(AGG, p => p.name).map(p => new Option(`${p.name} (${p.teams.join(" → ")})`)));
+  document.getElementById("pr-list").replaceChildren(...d3.sort(AGG, p => p.name).map(p => new Option(playerLabel(p))));
+
+  // Controls the user normally sets; synced here too because the URL (or Back) can change them
+  for (const [id, v] of [["f-pos", state.pos], ["f-mode", state.mode], ["pr-cmp", state.cmp], ["vr-grade", state.vrGrade], ["vr-age", state.vrAge]]) {
+    document.getElementById(id).value = v;
+  }
 }
 
 // Re-aggregate after the date range changes
@@ -964,6 +1098,70 @@ function render() {
   drawLeaderboard();
   drawProfile();
   drawTable();
+  writeHash();
+}
+
+// ---------- URL ----------
+
+// All settings live in the URL hash, e.g. #season=2025-2026&pos=role:ST&player=942393, so a view can be shared
+// as a link. Only settings that differ from the defaults are written, which keeps links short.
+function stateToHash() {
+  const h = new URLSearchParams();
+  const put = (key, v, def) => { if (v != null && v !== "" && String(v) !== String(def)) h.set(key, v); };
+  put("season", state.season, DEFAULTS.season);
+  if (state.season === "custom") { h.set("from", state.from); h.set("to", state.to); }
+  put("pos", state.pos, DEFAULTS.pos);
+  put("team", state.team, "");
+  if (state.minManual) h.set("min", state.minMin); // otherwise it's derived from the date range
+  put("mode", state.mode, DEFAULTS.mode);
+  put("view", state.view, DEFAULTS.view);
+  if (state.view === "custom") { h.set("x", state.x); h.set("y", state.y); }
+  put("lb", state.lb, DEFAULTS.lb);
+  put("against", state.cmp, DEFAULTS.cmp);
+  put("grade", state.vrGrade, DEFAULTS.vrGrade);
+  put("age", state.vrAge, DEFAULTS.vrAge);
+  put("player", state.selectedId, null);
+  put("vs", state.compareId, null);
+  return h.toString() ? "#" + h.toString() : "";
+}
+
+// Read the hash into state. Unknown or invalid values are ignored, so an old or edited link still opens.
+function hashToState() {
+  Object.assign(state, structuredClone(DEFAULTS));
+  const h = new URLSearchParams(location.hash.slice(1));
+  const s = h.get("season");
+  const known = seasons.find(x => x.id === s);
+  if (known) Object.assign(state, { season: known.id, from: known.start, to: known.end });
+  else if (s === "all") Object.assign(state, { season: "all", from: allStart, to: allEnd });
+  else if (s === "custom" && h.get("from") && h.get("to")) Object.assign(state, { season: "custom", from: h.get("from"), to: h.get("to") });
+  const pick = (key, allowed) => { const v = h.get(key); return v != null && allowed.includes(v) ? v : null; };
+  state.pos = pick("pos", POS_OPTIONS.map(o => o[0])) ?? state.pos;
+  state.mode = pick("mode", ["p90", "total"]) ?? state.mode;
+  state.cmp = pick("against", ["role", "line", "out"]) ?? state.cmp;
+  state.vrGrade = pick("grade", ["AB", "A", "B"]) ?? state.vrGrade;
+  state.lb = pick("lb", METRICS.map(m => m.key)) ?? state.lb;
+  if (h.has("team")) state.team = h.get("team");
+  const view = pick("view", [...VIEWS.map(v => v.id), "custom"]);
+  if (view) applyView(view);
+  if (state.view === "custom") {
+    state.x = pick("x", METRICS.map(m => m.key)) ?? state.x;
+    state.y = pick("y", METRICS.map(m => m.key)) ?? state.y;
+  }
+  if (h.has("min") && MIN_OPTIONS.includes(+h.get("min"))) { state.minMin = +h.get("min"); state.minManual = true; }
+  if (h.has("age")) state.vrAge = +h.get("age") || DEFAULTS.vrAge;
+  if (h.has("player")) state.selectedId = +h.get("player");
+  if (h.has("vs")) state.compareId = +h.get("vs");
+}
+
+let lastPlayers = null;
+function writeHash() {
+  const hash = stateToHash();
+  const players = `${state.selectedId}|${state.compareId}`;
+  // Opening another player adds a history entry, so Back returns to the previous one; other changes replace it
+  const push = lastPlayers !== null && players !== lastPlayers;
+  lastPlayers = players;
+  if (hash === location.hash) return;
+  history[push ? "pushState" : "replaceState"](null, "", hash || location.pathname + location.search);
 }
 
 function init() {
@@ -997,15 +1195,42 @@ function init() {
   on("sc-y", v => { state.y = v; matchView(); syncControls(); });
   on("lb-metric", v => { state.lb = v; });
   on("pr-cmp", v => { state.cmp = v; });
+  on("vr-grade", v => { state.vrGrade = v; });
+  on("vr-age", v => { state.vrAge = +v; });
 
+  // Find player (top bar): opens the profile
   document.getElementById("pr-search").addEventListener("change", e => {
-    const p = AGG.find(p => `${p.name} (${p.teams.join(" → ")})` === e.target.value);
-    if (p) { select(p); e.target.value = ""; }
+    const p = playerByLabel(e.target.value);
+    if (p) { openProfile(p); e.target.value = ""; }
   });
+  // Compare with player (profile card)
+  document.getElementById("pr-vs").addEventListener("change", e => {
+    const p = playerByLabel(e.target.value);
+    if (p && p.id !== state.selectedId) { state.compareId = p.id; render(); }
+    e.target.value = "";
+  });
+  document.getElementById("pr-vs-clear").addEventListener("click", () => { state.compareId = null; render(); });
+
+  // ⓘ buttons: show the definition of the metric currently picked in the dropdown next to them.
+  // Hover, keyboard focus and tap (mobile) all work.
+  for (const b of document.querySelectorAll(".info")) {
+    const show = () => {
+      const m = M[document.getElementById(b.dataset.select).value];
+      const r = b.getBoundingClientRect();
+      showTip({ clientX: r.left, clientY: r.bottom }, label(m), [], metricInfo(m));
+    };
+    for (const ev of ["mouseenter", "focus", "click"]) b.addEventListener(ev, show);
+    for (const ev of ["mouseleave", "blur"]) b.addEventListener(ev, hideTip);
+  }
 
   fillSelect("f-pos", POS_OPTIONS, state.pos);
+  fillSelect("vr-age", [[99, "Any"], [21, "21 or younger"], [23, "23 or younger"], [25, "25 or younger"], [27, "27 or younger"], [30, "30 or younger"]], state.vrAge);
+  hashToState(); // a shared link or a reload restores its settings
   updateRange();
   render();
+
+  // Back / Forward: re-read the settings from the URL
+  window.addEventListener("popstate", () => { hashToState(); updateRange(); render(); });
 
   let lastWidth = 0;
   new ResizeObserver(([entry]) => {

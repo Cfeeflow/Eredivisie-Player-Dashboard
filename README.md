@@ -4,12 +4,14 @@ An interactive dashboard of Eredivisie player statistics, built from FotMob matc
 
 ## What's in it
 
-- **Filters** for season or a custom date range, position (broad or detailed), team and minimum minutes. Stats show per 90 or as totals.
+- **Filters** for season or a custom date range, position (broad or detailed), team and minimum minutes. Stats show per 90 or as totals. **Find player** in the same bar opens a player's profile.
 - **Explorer**: a scatter plot of two metrics, split at the median into four quadrants. Preset views each answer one question (finishing, shot selection, chance creation, defensive style and more), and picking your own X axis suggests Y metrics that pair well with it.
-- **Value rating**: grades outfield players A (very undervalued), B (undervalued) or C (fairly valued or expensive) by comparing their market value with what a model expects from their performance. Every grade comes with the reasons behind it.
+- **Value rating**: grades outfield players A (very undervalued), B (undervalued) or C (fairly valued or expensive) by comparing their market value with what a model expects from their performance. Every grade comes with the reasons behind it. The list of undervalued players can be narrowed by grade and maximum age.
 - **Top 15** for any metric.
-- **Player profile** with percentiles against players in the same position, and the FotMob rating for every match.
+- **Player profile** with percentiles against the same position, the same line or all outfield players, and the FotMob rating for every match. **Compare with player** puts a second player next to him in every part of the profile.
 - **Table** of all players in the current filter, sortable by any column. Players who played for more than one club in the selected period are marked ⇄.
+
+The ⓘ buttons, the percentile tooltips and the table headers explain each metric. All settings, including the open player, are stored in the URL, so a link opens the same view, and the browser's Back button returns to the previous player.
 
 ## Updating the data
 
