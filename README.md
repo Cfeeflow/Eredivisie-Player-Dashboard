@@ -6,6 +6,7 @@ An interactive dashboard of Eredivisie player statistics, built from FotMob matc
 
 - **Filters** for season or a custom date range, position (broad or detailed), team and minimum minutes. Stats show per 90 or as totals.
 - **Explorer**: a scatter plot of two metrics, split at the median into four quadrants. Preset views each answer one question (finishing, shot selection, chance creation, defensive style and more), and picking your own X axis suggests Y metrics that pair well with it.
+- **Value rating**: grades outfield players A (very undervalued), B (undervalued) or C (fairly valued or expensive) by comparing their market value with what a model expects from their performance. Every grade comes with the reasons behind it.
 - **Top 15** for any metric.
 - **Player profile** with percentiles against players in the same position, and the FotMob rating for every match.
 - **Table** of all players in the current filter, sortable by any column. Players who played for more than one club in the selected period are marked ⇄.
@@ -16,6 +17,8 @@ An interactive dashboard of Eredivisie player statistics, built from FotMob matc
 pip install pandas requests
 python scrape.py 2026-2027        # scrape one or more seasons into raw/
 python build_data.py              # rebuild data/players.js from everything in raw/
+pip install scikit-learn
+python value_model.py             # retrain the value model, write data/ratings.js
 ```
 
 `scrape.py` waits one second between requests, so a full season of 306 matches takes about ten minutes.
@@ -23,6 +26,18 @@ python build_data.py              # rebuild data/players.js from everything in r
 ## Positions
 
 FotMob records the formation slot each starter played in. `build_data.py` maps those slots to seven roles: goalkeeper, centre back, full back (including wing-backs), central midfielder, attacking midfielder, winger and striker. A player's role is the one they played the most minutes in during the selected period. Players who only came off the bench get FotMob's broad position (defender, midfielder or forward).
+
+## Value rating
+
+`value_model.py` predicts each outfield player's log market value from 13 features (age, share of minutes, team points per game, FotMob rating, Dutch nationality and eight per-90 or accuracy stats) plus position. It trains on one row per player per season, pooling both seasons.
+
+- **Out-of-fold predictions.** Players are split into five folds, and each player's value comes from a model trained without any of his seasons. The split is repeated five times and averaged.
+- **Two models.** A random forest and a ridge regression are both evaluated, and the one with the higher out-of-fold R² is used. On the current data that's the ridge regression (R² 0.68 vs 0.66, typical error ×1.73). The forest's predictions are squeezed towards the average price (calibration slope 1.18), so both get a linear calibration.
+- **Grades.** A needs an expected value at least 2× the actual value and a FotMob rating at or above the median for the position. B needs at least 1.5×. Both thresholds sit above the model's typical error, so a grade isn't triggered by noise alone.
+- **Price bias.** The script prints the grade mix per band of expected value and per band of actual price. Cheap players still get more A and B grades, partly through regression to the mean: the gap correlates with actual price at −√(1 − R²).
+- **Reasons.** For each feature, the script sets it to the median for the player's position and records how much the expected value drops. The largest effects become the explanation shown in the dashboard.
+
+Contract length, injury history and international reputation are not in the data, and they explain part of every gap.
 
 ## Files
 
@@ -33,3 +48,4 @@ FotMob records the formation slot each starter played in. `build_data.py` maps t
 | `raw/` | Scraped CSVs, one per season |
 | `scrape.py` | FotMob scraper |
 | `build_data.py` | Turns the raw CSVs into `data/players.js` |
+| `value_model.py` | Trains the value model and writes `data/ratings.js` |

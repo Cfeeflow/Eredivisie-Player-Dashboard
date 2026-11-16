@@ -49,6 +49,27 @@
         </div>
       </section>
 
+      <section class="card wide" id="value-card">
+        <div class="card-head"><h2>Value rating</h2></div>
+        <p class="question">Who performs like they're worth more than their market value?</p>
+        <p class="sub" id="vr-sub"></p>
+        <div class="explorer-body">
+          <div>
+            <div class="legend" id="vr-legend"></div>
+            <div class="chart" id="value-chart"></div>
+          </div>
+          <div>
+            <h3>Most undervalued</h3>
+            <p class="sub">Grade A and B, biggest gap first. Click a player for the full explanation.</p>
+            <ol class="vr-list" id="vr-list"></ol>
+          </div>
+        </div>
+        <details class="method">
+          <summary>How the rating works</summary>
+          <div id="vr-method"></div>
+        </details>
+      </section>
+
       <section class="card">
         <div class="card-head">
           <h2>Top 15</h2>
@@ -68,6 +89,7 @@
         </div>
         <p class="sub" id="pr-sub"></p>
         <div class="tiles" id="pr-tiles"></div>
+        <div class="why" id="pr-why"></div>
         <h3>Percentile vs same position</h3>
         <p class="sub" id="pct-sub"></p>
         <div class="chart" id="percentiles"></div>
@@ -87,6 +109,7 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
   <script src="data/players.js"></script>
+  <script src="data/ratings.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -472,6 +472,183 @@ function drawQuadrants(data, view, mx, my) {
   document.getElementById("quadrants").replaceChildren(...blocks);
 }
 
+// ---------- value rating ----------
+
+const RATINGS = window.RATINGS ?? { meta: null, rows: [] };
+const ratingOf = new Map(RATINGS.rows.map(r => [`${r.id}|${r.season}`, r]));
+const GRADES = { A: "very undervalued", B: "undervalued", C: "fairly valued or expensive" };
+const FEATURE_SHORT = {
+  npxg90: "npxG", xa90: "xA", final3rd90: "final-third passes", dribbles90: "dribbles", def90: "tackles + interceptions",
+  aerials90: "aerial duels won", passes90: "passes", pass_pct: "pass accuracy", rating: "FotMob rating",
+  min_share: "playing time", age: "age", team_ppg: "team results", dutch: "Dutch nationality",
+};
+
+// Ratings are per season: the selected one, or the latest season inside a custom range
+function ratingSeason() {
+  if (seasons.some(s => s.id === state.season)) return state.season;
+  return seasons.find(s => s.start <= state.to && s.end >= state.from)?.id;
+}
+const ratingFor = p => ratingOf.get(`${p.id}|${ratingSeason()}`);
+
+function fmtFeature(f, v) {
+  if (v == null) return "–";
+  if (f === "pass_pct") return v.toFixed(0) + "%";
+  if (f === "min_share") return (v * 100).toFixed(0) + "% of minutes";
+  if (f === "age") return v.toFixed(0);
+  if (f === "dutch") return v ? "yes" : "no";
+  return v.toFixed(2);
+}
+
+function ratingSummary(r) {
+  const strong = r.reasons.filter(x => x.effect > 0 && !x.context && x.pct >= 50).slice(0, 2).map(x => FEATURE_SHORT[x.feature]);
+  const role = ROLES[r.role][0].toLowerCase();
+  const lead = strong.length ? `High ${strong.join(" and ")} for a ${role}` : `Profile of a ${role}`;
+  return `${lead}, valued at ${fmt(M.value, r.value)}, model expects ${fmt(M.value, r.expected)} (${r.gap.toFixed(1)}×).`;
+}
+
+function reasonLine(r, x) {
+  const where = x.context ? "" : ` (${x.pct >= 50 ? "top " + Math.max(1, 100 - x.pct) : "bottom " + Math.max(1, x.pct)}% of ${ROLES[r.role][1]})`;
+  const sign = x.effect >= 0 ? "+" : "−";
+  return `${x.label}: ${fmtFeature(x.feature, x.value)}${where} → ${sign}${fmt(M.value, Math.abs(x.effect))} on expected value`;
+}
+
+function gradeBadge(g) {
+  return el("span", `grade ${g}`, g);
+}
+
+function drawValue() {
+  const card = document.getElementById("value-card");
+  const season = ratingSeason();
+  card.hidden = !RATINGS.meta || !season;
+  if (card.hidden) return;
+  const m = RATINGS.meta;
+  const seasonLabel = seasons.find(s => s.id === season).label;
+
+  if (group() === "gk") {
+    document.getElementById("vr-sub").textContent = "The value rating covers outfield players only; there are too few keepers to train a model on.";
+    for (const id of ["vr-legend", "value-chart", "vr-list"]) document.getElementById(id).replaceChildren();
+    return;
+  }
+  const byId = new Map(AGG.map(p => [p.id, p]));
+  const data = RATINGS.rows
+    .filter(r => r.season === season)
+    .map(r => ({ r, p: byId.get(r.id) }))
+    .filter(d => d.p && posMatch(d.p, state.pos) && (!state.team || d.p.teams.includes(state.team)));
+
+  document.getElementById("vr-sub").textContent =
+    `${seasonLabel}${state.season !== season ? " (latest season in the selected range)" : ""} · ${data.length} players with enough minutes · ` +
+    `${m.model}, out-of-fold R² ${m.r2} on log value, typical error ×${m.mae_factor}`;
+
+  document.getElementById("vr-legend").replaceChildren(...["A", "B", "C"].map(g => {
+    const s = el("span");
+    const key = el("span", "key");
+    key.style.background = `var(--grade-${g.toLowerCase()})`;
+    s.append(key, `${g} · ${GRADES[g]} (${data.filter(d => d.r.grade === g).length})`);
+    return s;
+  }));
+
+  drawValueChart(data);
+
+  const list = d3.sort(data.filter(d => d.r.grade !== "C"), d => -d.r.gap).slice(0, 25);
+  document.getElementById("vr-list").replaceChildren(...(list.length ? list.map(({ r, p }) => {
+    const li = el("li");
+    const body = el("div");
+    body.append(el("div", "who", `${p.name} · ${r.role} · ${p.teams.join(" → ")}`), el("div", "what", ratingSummary(r)));
+    li.append(gradeBadge(r.grade), body);
+    li.addEventListener("click", () => { select(p); document.getElementById("profile").scrollIntoView({ behavior: "smooth" }); });
+    return li;
+  }) : [el("li", null, "No A or B players with the current filters.")]));
+
+  const method = document.getElementById("vr-method");
+  method.replaceChildren(el("p", null,
+    `A model predicts each player's market value from performance and context, then compares that with his actual value.`));
+  const ul = el("ul");
+  for (const t of [
+    `Grade A: expected value at least ${m.a_gap}× the actual value, and a FotMob rating at or above the median for his position. B: at least ${m.b_gap}×. C: the rest.`,
+    `Features: ${m.features.join(", ")}, plus position.`,
+    `Trained on ${m.n} player-seasons from both seasons. Every prediction is out-of-fold: the model that predicts a player never saw any of his seasons.`,
+    `Model comparison: ${Object.entries(m.comparison).map(([n, c]) => `${n} R² ${c.r2}`).join(", ")}. The better one is used, calibrated so predictions aren't squeezed towards the average price.`,
+    `Share of A grades by expected value: ${Object.entries(m.a_share_by_expected).map(([b, v]) => `${b} ${v}%`).join(", ")}. By actual price: ${Object.entries(m.a_share_by_price).map(([b, v]) => `${b} ${v}%`).join(", ")}. Cheap players get more A grades partly by construction: with a typical error of ×${m.mae_factor}, some cheap players look undervalued through noise alone.`,
+    `Market value doesn't capture everything: contract length, injuries and reputation abroad aren't in the data, and they explain part of every gap.`,
+  ]) ul.append(el("li", null, t));
+  method.append(ul);
+}
+
+function drawValueChart(data) {
+  const height = 420;
+  const { svg, width } = svgIn("value-chart", height);
+  const mg = { top: 12, right: 24, bottom: 44, left: 60 };
+  if (!data.length) return;
+  const all = data.flatMap(d => [d.r.value, d.r.expected]);
+  const dom = [d3.min(all) * 0.8, d3.max(all) * 1.25];
+  const x = d3.scaleLog(dom, [mg.left, width - mg.right]);
+  const y = d3.scaleLog(dom, [height - mg.bottom, mg.top]);
+  const [x0, x1] = x.range(), [y0, y1] = y.range();
+  const ticks = [1e5, 2e5, 5e5, 1e6, 2e6, 5e6, 1e7, 2e7, 5e7, 1e8].filter(v => v >= dom[0] && v <= dom[1]);
+  const eur = v => fmt(M.value, v);
+
+  svg.append("g").attr("class", "gridline").attr("transform", `translate(0,${y0})`)
+    .call(d3.axisBottom(x).tickValues(ticks).tickSize(-(y0 - y1)).tickFormat(""));
+  svg.append("g").attr("class", "gridline").attr("transform", `translate(${x0},0)`)
+    .call(d3.axisLeft(y).tickValues(ticks).tickSize(-(x1 - x0)).tickFormat(""));
+  svg.append("g").attr("class", "axis").attr("transform", `translate(0,${y0})`)
+    .call(d3.axisBottom(x).tickValues(ticks).tickFormat(eur).tickSizeOuter(0));
+  svg.append("g").attr("class", "axis").attr("transform", `translate(${x0},0)`)
+    .call(d3.axisLeft(y).tickValues(ticks).tickFormat(eur).tickSizeOuter(0));
+  svg.append("text").attr("class", "axis-title").attr("x", x1).attr("y", height - 6).attr("text-anchor", "end").text("Actual market value");
+  svg.append("text").attr("class", "axis-title").attr("transform", `translate(14,${y1}) rotate(-90)`).attr("text-anchor", "end").text("Expected value (model)");
+
+  // Reference lines: fair value and the A threshold
+  for (const [k, text, cls] of [[1, "fair value", "diagonal"], [RATINGS.meta.a_gap, `${RATINGS.meta.a_gap}× expected`, "median-line"]]) {
+    const lo = Math.max(dom[0], dom[0] / k), hi = Math.min(dom[1], dom[1] / k);
+    svg.append("line").attr("class", cls).attr("x1", x(lo)).attr("y1", y(lo * k)).attr("x2", x(hi)).attr("y2", y(hi * k));
+    const angle = Math.atan2(y(hi * k) - y(lo * k), x(hi) - x(lo)) * 180 / Math.PI;
+    const at = Math.sqrt(lo * hi) * (k === 1 ? 4 : 0.25); // fair value label upper right, threshold label lower left
+    svg.append("text").attr("class", "quad-label").attr("text-anchor", "middle").attr("dy", -5)
+      .attr("transform", `translate(${x(at)},${y(at * k)}) rotate(${angle})`).text(text);
+  }
+  svg.append("text").attr("class", "quad-label").attr("x", x0 + 8).attr("y", y1 + 14).text("Undervalued ↖");
+  svg.append("text").attr("class", "quad-label").attr("x", x1 - 8).attr("y", y0 - 8).attr("text-anchor", "end").text("↘ Expensive");
+
+  const sel = selected();
+  // Draw C first so A and B sit on top
+  const order = { C: 0, B: 1, A: 2 };
+  svg.append("g").selectAll("circle").data(d3.sort(data.filter(d => d.p !== sel), d => order[d.r.grade])).join("circle")
+    .attr("cx", d => x(d.r.value)).attr("cy", d => y(d.r.expected)).attr("r", 4)
+    .attr("fill", d => `var(--grade-${d.r.grade.toLowerCase()})`).attr("stroke", "var(--surface-1)").attr("stroke-width", 2);
+  const selD = data.find(d => d.p === sel);
+  if (selD) {
+    svg.append("circle").attr("cx", x(selD.r.value)).attr("cy", y(selD.r.expected)).attr("r", 6)
+      .attr("fill", "var(--highlight)").attr("stroke", "var(--surface-1)").attr("stroke-width", 2);
+  }
+  const labelled = d3.sort(data.filter(d => d.r.grade === "A" && d !== selD), d => -d.r.gap).slice(0, 3);
+  if (selD) labelled.push(selD);
+  svg.append("g").selectAll("text").data(labelled).join("text")
+    .attr("class", d => d === selD ? "label-strong halo" : "halo")
+    .attr("x", d => x(d.r.value)).attr("y", d => y(d.r.expected)).attr("dx", 9).attr("dy", "0.32em").text(d => d.p.name);
+
+  const delaunay = d3.Delaunay.from(data, d => x(d.r.value), d => y(d.r.expected));
+  const ring = svg.append("circle").attr("r", 7).attr("fill", "none").attr("stroke", "var(--text-primary)").attr("stroke-width", 1.5).attr("visibility", "hidden");
+  const nearest = event => {
+    const [px, py] = d3.pointer(event);
+    const d = data[delaunay.find(px, py)];
+    return d && Math.hypot(x(d.r.value) - px, y(d.r.expected) - py) < 30 ? d : null;
+  };
+  svg.append("rect").attr("x", x0).attr("y", y1).attr("width", x1 - x0).attr("height", y0 - y1).attr("fill", "transparent")
+    .on("pointermove", event => {
+      const d = nearest(event);
+      event.target.classList.toggle("clickable", !!d);
+      if (!d) { ring.attr("visibility", "hidden"); hideTip(); return; }
+      ring.attr("cx", x(d.r.value)).attr("cy", y(d.r.expected)).attr("visibility", "visible");
+      showTip(event, `${d.p.name} · ${d.r.role} · ${d.p.teams.join(" → ")}`, [
+        ["Grade", `${d.r.grade} · ${GRADES[d.r.grade]}`], ["Actual value", eur(d.r.value)],
+        ["Expected value", eur(d.r.expected)], ["Gap", d.r.gap.toFixed(2) + "×"],
+      ]);
+    })
+    .on("pointerleave", () => { ring.attr("visibility", "hidden"); hideTip(); })
+    .on("click", event => { const d = nearest(event); if (d) select(d.p); });
+}
+
 // ---------- leaderboard ----------
 
 function drawLeaderboard() {
@@ -533,6 +710,19 @@ function drawProfile() {
     t.append(el("div", "label", k), el("div", "value", v));
     return t;
   }));
+
+  const why = document.getElementById("pr-why");
+  const r = ratingFor(p);
+  if (r) {
+    const text = el("div");
+    text.append(el("div", "summary", `Value rating ${r.grade} (${GRADES[r.grade]}): ${ratingSummary(r)}`));
+    const ul = el("ul");
+    for (const x of r.reasons) ul.append(el("li", null, reasonLine(r, x)));
+    text.append(ul);
+    why.replaceChildren(gradeBadge(r.grade), text);
+  } else {
+    why.replaceChildren();
+  }
 
   drawPercentiles(p);
   drawForm(p);
@@ -743,6 +933,7 @@ function render() {
     `${meta.league} · ${fmtDate(state.from)} to ${fmtDate(state.to)} · ${Math.round(nMatches)} matches · ` +
     `data up to ${fmtDate(allEnd)} · source: FotMob`;
   drawExplorer();
+  drawValue();
   drawLeaderboard();
   drawProfile();
   drawTable();

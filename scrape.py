@@ -65,6 +65,8 @@ def get_player_stats(match_id):
                 "position_id": p.get("positionId"),
                 "usual_position": p.get("usualPlayingPositionId"),
                 "formation": team.get("formation") if "positionId" in p else None,
+                "age": p.get("age"),
+                "country": p.get("countryCode"),
             }
 
     rows = []
@@ -80,6 +82,8 @@ def get_player_stats(match_id):
             "position_id": info.get("position_id"),
             "usual_position": info.get("usual_position"),
             "formation": info.get("formation"),
+            "age": info.get("age"),
+            "country": info.get("country"),
         }
         for section in player["stats"]:
             for name, entry in section["stats"].items():
