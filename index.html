@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Eredivisie Player Stats</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="viz-root">
+    <header>
+      <h1>Eredivisie player stats</h1>
+      <p class="meta" id="meta"></p>
+    </header>
+
+    <div class="filters">
+      <label>Season <select id="f-season"></select></label>
+      <label>From <input type="date" id="f-from"></label>
+      <label>To <input type="date" id="f-to"></label>
+      <label>Position <select id="f-pos"></select></label>
+      <label>Team <select id="f-team"></select></label>
+      <label>Min. minutes <select id="f-min"></select></label>
+      <label>Stats
+        <select id="f-mode">
+          <option value="p90">Per 90</option>
+          <option value="total">Totals</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="grid">
+      <section class="card wide">
+        <div class="card-head">
+          <h2>Explorer</h2>
+          <div class="controls"><label>View <select id="ex-view"></select></label></div>
+        </div>
+        <p class="question" id="ex-question"></p>
+        <div class="controls axis-controls">
+          <label>X <select id="sc-x"></select></label>
+          <label>Y <select id="sc-y"></select></label>
+        </div>
+        <div class="suggest" id="ex-suggest"></div>
+        <div class="explorer-body">
+          <div>
+            <p class="sub">Each dot is a player; the lines split them at the median. Click a dot to open the profile.</p>
+            <div class="chart" id="scatter"></div>
+          </div>
+          <div class="quadrants" id="quadrants"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Top 15</h2>
+          <div class="controls"><select id="lb-metric" aria-label="Leaderboard metric"></select></div>
+        </div>
+        <p class="sub" id="lb-sub"></p>
+        <div class="chart" id="leaderboard"></div>
+      </section>
+
+      <section class="card" id="profile">
+        <div class="card-head">
+          <h2 id="pr-name">Player</h2>
+          <div class="controls">
+            <input id="pr-search" list="pr-list" placeholder="Search player…" aria-label="Search player">
+            <datalist id="pr-list"></datalist>
+          </div>
+        </div>
+        <p class="sub" id="pr-sub"></p>
+        <div class="tiles" id="pr-tiles"></div>
+        <h3>Percentile vs same position</h3>
+        <p class="sub" id="pct-sub"></p>
+        <div class="chart" id="percentiles"></div>
+        <h3>FotMob rating per match</h3>
+        <p class="sub">The hairline marks the player's average.</p>
+        <div class="chart" id="form"></div>
+      </section>
+
+      <section class="card wide">
+        <div class="card-head"><h2>Table</h2></div>
+        <p class="sub">Click a column header to sort, a row to open the profile. ⇄ marks players who played for more than one team in the selected period.</p>
+        <div class="table-wrap"><table id="table"></table></div>
+      </section>
+    </div>
+  </main>
+  <div class="tooltip" id="tooltip" hidden></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+  <script src="data/players.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
