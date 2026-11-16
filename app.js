@@ -495,6 +495,8 @@ const FEATURE_SHORT = {
   npxg90: "npxG", xa90: "xA", final3rd90: "final-third passes", dribbles90: "dribbles", def90: "tackles + interceptions",
   aerials90: "aerial duels won", passes90: "passes", pass_pct: "pass accuracy", rating: "FotMob rating",
   min_share: "playing time", age: "age", team_ppg: "team results", dutch: "Dutch nationality",
+  team_value: "club reputation", prev_rating: "last season's rating", prev_min_share: "last season's playing time",
+  has_prev: "Eredivisie experience",
 };
 
 // Ratings are per full season: show every season that overlaps the selected range, latest first
@@ -505,9 +507,11 @@ const seasonLabel = id => seasons.find(s => s.id === id).label;
 function fmtFeature(f, v) {
   if (v == null) return "–";
   if (f === "pass_pct") return v.toFixed(0) + "%";
-  if (f === "min_share") return (v * 100).toFixed(0) + "% of minutes";
+  if (f === "min_share" || f === "prev_min_share") return (v * 100).toFixed(0) + "% of minutes";
   if (f === "age") return v.toFixed(0);
-  if (f === "dutch") return v ? "yes" : "no";
+  if (f === "dutch" || f === "has_prev") return v ? "yes" : "no";
+  if (f === "team_value") return fmt(M.value, Math.exp(v)); // stored as log value
+
   return v.toFixed(2);
 }
 

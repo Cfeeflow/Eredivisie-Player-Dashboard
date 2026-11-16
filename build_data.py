@@ -61,15 +61,15 @@ def role(position_id, formation):
     lane runs 1-9 across the pitch, so lanes 1-2 and 8-9 are the flanks.
     """
     if pd.isna(position_id):
-        return ""
+        return ""  # substitutes have no formation slot; the dashboard falls back to FotMob's broad position
     pid = int(position_id)
-    line, lane = divmod(pid, 10)
+    line, lane = divmod(pid, 10)  # e.g. 105 -> line 10, lane 5 (centre forward)
     wide = lane <= 2 or lane >= 8
     back_three = str(formation).startswith("3")
     if pid == 11:
         return "GK"
     if line <= 4:
-        return "FB" if wide else "CB"
+        return "FB" if wide else "CB"  # back four: 32/38 full backs, 34/36 centre backs; back three: all CB
     if line == 5:
         return "FB" if wide else "CM"  # wing-backs in a back five, or a holding midfielder
     if line <= 9:
@@ -81,14 +81,14 @@ def role(position_id, formation):
         if line >= 8 and str(formation).split("-")[-2:-1] != ["4"]:
             return "AM"
         return "CM"
-    return "W" if lane <= 3 or lane >= 7 else "ST"
+    return "W" if lane <= 3 or lane >= 7 else "ST"  # front line: 103/107 wingers, 104-106 strikers
 
 
 def main():
     df = pd.concat([pd.read_csv(f, low_memory=False) for f in sorted(RAW.glob("*.csv"))], ignore_index=True)
-    df = df[df["Minutes played"].fillna(0) > 0].copy()
-    df = df.sort_values(["date", "match_id"])
-    df[list(COUNT_COLS)] = df[list(COUNT_COLS)].fillna(0)
+    df = df[df["Minutes played"].fillna(0) > 0].copy()  # unused substitutes have a row but no minutes
+    df = df.sort_values(["date", "match_id"])            # the dashboard relies on rows being in date order
+    df[list(COUNT_COLS)] = df[list(COUNT_COLS)].fillna(0)  # a missing stat in a match means it didn't happen
     df["role"] = [role(p, f) for p, f in zip(df["position_id"], df["formation"])]
 
     # 'team' and 'home'/'away' spell some clubs differently, so take the opponent from the other team in the match
@@ -98,20 +98,22 @@ def main():
         for m, team in zip(df["match_id"], df["team"])
     ]
 
+    # Teams and players are stored once and referenced by index in every row, which keeps the file small
     teams = sorted(set(df["team"]) | set(df["opponent"]))
     team_idx = {t: i for i, t in enumerate(teams)}
-    player_ids = list(dict.fromkeys(df["player_id"]))
+    player_ids = list(dict.fromkeys(df["player_id"]))  # unique ids in order of first appearance
     player_idx = {p: i for i, p in enumerate(player_ids)}
-    latest_name = df.groupby("player_id")["player"].last()
+    latest_name = df.groupby("player_id")["player"].last()  # FotMob sometimes changes the spelling over time
 
-    cols = ["player", "date", "team", "opp", "min", "rating", "value", "gk", "role", "usual", *COUNT_COLS.values()]
+    # Rows as arrays with one shared header ('cols') instead of objects with keys: about 3x smaller
+    cols =["player", "date", "team", "opp", "min", "rating", "value", "gk", "role", "usual", *COUNT_COLS.values()]
     rows = [
         [
             player_idx[pid], date, team_idx[team], team_idx[opp], int(minutes),
             None if pd.isna(rating) else round(rating, 2),
             None if pd.isna(value) else int(value),
             int(bool(gk)), rl, None if pd.isna(usual) else int(usual),
-            *(round(float(v), 2) if v % 1 else int(v) for v in stats),
+            *(round(float(v), 2) if v % 1 else int(v) for v in stats),  # whole numbers without ".0"
         ]
         for pid, date, team, opp, minutes, rating, value, gk, rl, usual, *stats in df[
             ["player_id", "date", "team", "opponent", "Minutes played", "FotMob rating", "market_value",
@@ -119,8 +121,10 @@ def main():
         ].itertuples(index=False)
     ]
 
+    # Season presets for the dashboard's Season filter; start/end are the first and last match dates
     seasons = [
-        {"id": s, "label": s[:5] + s[-2:], "start": g["date"].min(), "end": g["date"].max(), "matches": g["match_id"].nunique()}
+        {"id": s, "label": s[:5] + s[-2:],  # "2025-2026" -> "2025-26"
+         "start": g["date"].min(), "end": g["date"].max(), "matches": g["match_id"].nunique()}
         for s, g in df.groupby("season")
     ]
     data = {
