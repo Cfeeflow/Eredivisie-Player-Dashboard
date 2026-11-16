@@ -575,7 +575,9 @@ function ratingSummary(r) {
   const strong = r.reasons.filter(x => x.effect > 0 && !x.context && x.pct >= 50).slice(0, 2).map(x => FEATURE_SHORT[x.feature]);
   const role = ROLES[r.role][0].toLowerCase();
   const lead = strong.length ? `High ${strong.join(" and ")} for a ${role}` : `Profile of a ${role}`;
-  const capped = r.too_old ? ` A on performance, but A requires age ${RATINGS.meta.a_max_age} or younger (he's ${r.age}).` : "";
+  const capped = r.too_old
+    ? ` Undervalued on performance, but A and B require age ${RATINGS.meta.max_age} or younger: after that, values rarely rise (he's ${r.age}).`
+    : "";
   return `${lead}, valued at ${fmt(M.value, r.value)}, model expects ${fmt(M.value, r.expected)} (${r.gap.toFixed(1)}×).${capped}`;
 }
 
@@ -642,8 +644,11 @@ function drawValue() {
     `A model predicts each player's market value from performance and context, then compares that with his actual value.`));
   const ul = el("ul");
   for (const t of [
-    `Grade A: expected value at least ${m.a_gap}× the actual value, a FotMob rating at or above the median for his position, and age ${m.a_max_age} or younger. ` +
-      `An older player's low price mostly reflects the few seasons he has left, so he gets at most a B. B: at least ${m.b_gap}×. C: the rest.`,
+    `Grade A: expected value at least ${m.a_gap}× the actual value. B: at least ${m.b_gap}×. Both also need a FotMob rating at or above the median ` +
+      `for his position and an age of ${m.max_age} or younger. C: the rest. These rules come from a backtest: they're the ones that predicted a player's value rising.`,
+    `Backtest, value change to the next season for players still in the Eredivisie: ` +
+      ["A", "B", "C"].filter(g => m.backtest[g]).map(g => `${g} ${m.backtest[g].rose}% rose (median ×${m.backtest[g].median}, n=${m.backtest[g].n})`).join(", ") +
+      `. Players sold abroad or relegated can't be followed, so this is a partial check.`,
     `Features: ${m.features.join(", ")}, plus position.`,
     `Per-90 stats and rating are pulled towards the position average, more strongly for players with fewer minutes: ` +
       `a player's own numbers count for minutes / (minutes + ${m.shrink_minutes}), so half at ${m.shrink_minutes} minutes and about 86% over a full season. ` +

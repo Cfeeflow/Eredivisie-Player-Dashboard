@@ -12,9 +12,9 @@ How it works
 3. A linear (ridge) model, a random forest and gradient boosting are compared on the same features. A tree
    model only replaces the linear one when it is clearly better by out-of-fold R². The chosen model gets a
    linear calibration so predictions aren't compressed towards the average price.
-4. Gap = expected value / actual value. A: gap >= 2, FotMob rating at or above the median for his role and
-   age 30 or younger (an older player's low price reflects a short career left, not a mistake by the market).
-   B: gap >= 1.5. C: the rest.
+4. Gap = expected value / actual value. A: gap >= 2, B: gap >= 1.25; both also need a FotMob rating at or
+   above the median for his role and age 27 or younger. C: the rest. Set with a backtest: these grades are the
+   ones that predicted a player's value rising the next season.
 5. Reasons: each feature is set to the role median and the change in expected value is that feature's effect.
 """
 import json
@@ -35,12 +35,15 @@ OUT = HERE / "data" / "ratings.js"
 
 # ---------- settings ----------
 
-# Grade thresholds on expected / actual value. The model's typical error is about ×1.7, so A (×2) needs a gap
-# clearly bigger than ordinary model noise; B (×1.5) is "probably undervalued".
-A_GAP, B_GAP = 2.0, 1.5
-# An older player's low price mostly reflects how few seasons he has left (no resale value), which the market
-# prices correctly for a buyer who wants to sell on later. So A is reserved for players this age or younger.
-A_MAX_AGE = 30
+# Grades, set with the backtest (does a grade predict the player's value rising the next season?):
+# - A gap only means something for players rated at or above the median for their position; below it, players
+#   with big gaps rose as often as everyone else (41%).
+# - Age is decisive: good players with a gap rose in 83% of cases at 23 or younger, 68% at 24-27, but only
+#   ~20% after 27. An older player's low price reflects the few seasons he has left, so the market is right.
+# - Gap size: A needs ×2 (all 15 such players rose in the backtest), B ×1.25 (68% rose, vs 38% for C).
+# The rules held in each season separately (A > B > C every time), so they aren't fitted to one season.
+A_GAP, B_GAP = 2.0, 1.25
+MAX_AGE = 27
 # FotMob stores no market value for many matches before 2025-26. A season's value needs at least this many
 # observations, so one stray number can't drive a grade.
 MIN_VALUE_OBS = 3
@@ -270,6 +273,27 @@ def r2(y, p):
     return 1 - ((y - p) ** 2).sum() / ((y - y.mean()) ** 2).sum()
 
 
+def backtest(ps):
+    """Does the grade predict the market? Compare each player's value at the end of season t with his value at
+    the end of season t+1, per grade. R² only says how well we explain today's prices; this checks whether an
+    'undervalued' player's price actually went up afterwards.
+
+    Only players still in the Eredivisie the next season can be followed: players sold abroad (often risers)
+    and players who dropped a level are missing.
+    """
+    nxt = dict(zip(sorted(ps["season"].unique())[:-1], sorted(ps["season"].unique())[1:]))
+    later = ps.set_index(["season", "player_id"])["value"]
+    ps = ps.assign(next_value=[later.get((nxt.get(s), i), np.nan) for s, i in zip(ps["season"], ps["player_id"])])
+    ps = ps.dropna(subset=["next_value"])
+    change = np.log(ps["next_value"] / ps["value"])  # log change: 0.69 = doubled
+    print(f"\nBacktest: value change to the next season ({len(ps)} player-seasons that can be followed)")
+    out = {}
+    for grade, c in change.groupby(ps["grade"]):
+        out[grade] = {"n": int(len(c)), "rose": round(float((c > 0).mean()) * 100), "median": round(float(np.exp(c.median())), 2)}
+        print(f"  {grade}: n={out[grade]['n']:3}  rose {out[grade]['rose']:3}%  median ×{out[grade]['median']}")
+    return out
+
+
 def choose_model(results):
     """The linear model, unless the best tree model beats it by at least TREE_MARGIN R²."""
     tree = max((n for n in results if n != "Linear (ridge)"), key=lambda n: results[n]["r2"])
@@ -317,9 +341,11 @@ def main():
     ps["gap"] = ps["expected"] / ps["value"]  # > 1: the model thinks he's worth more than his price
     # "Good player" check for A: rating percentile within his own position and season
     ps["rating_pct"] = ps.groupby(["season", "role"])["rating"].rank(pct=True) * 100
-    a_level = (ps["gap"] >= A_GAP) & (ps["rating_pct"] >= 50)
-    ps["too_old"] = a_level & (ps["age"] > A_MAX_AGE)  # would be A on performance, capped at B by age
-    ps["grade"] = np.where(a_level & ~ps["too_old"], "A", np.where(ps["gap"] >= B_GAP, "B", "C"))
+    good = ps["rating_pct"] >= 50
+    young = ps["age"] <= MAX_AGE
+    ps["grade"] = np.where((ps["gap"] >= A_GAP) & good & young, "A", np.where((ps["gap"] >= B_GAP) & good & young, "B", "C"))
+    # Would be A or B on performance, but too old for the value to rise: shown as C with a note
+    ps["too_old"] = (ps["gap"] >= B_GAP) & good & ~young
 
     # Price-bias checks: grades should not simply follow price.
     # By expected value: should be roughly flat (calibration makes the gap independent of the prediction).
@@ -340,6 +366,7 @@ def main():
     print("  grade share (%) per band of ACTUAL price - skews to cheap players, less so as R² rises:")
     print("    " + by_band.round(0).to_string().replace("\n", "\n    "))
     print("\n  grades:", ps["grade"].value_counts().sort_index().to_dict())
+    bt = backtest(ps)
 
     # Reasons: the four biggest effects on expected value, in euros
     out_rows = []
@@ -367,7 +394,7 @@ def main():
         "model": best, "r2": round(r["r2"], 2), "mae_factor": round(r["mae_factor"], 2),
         "comparison": {n: {"r2": round(v["r2"], 2), "slope": round(v["slope"], 2)} for n, v in results.items()},
         "n": len(ps), "seasons": sorted(ps["season"].unique().tolist()), "features": [FEATURES[f] for f in feats],
-        "a_gap": A_GAP, "b_gap": B_GAP, "a_max_age": A_MAX_AGE, "shrink_minutes": SHRINK_MINUTES,
+        "a_gap": A_GAP, "b_gap": B_GAP, "max_age": MAX_AGE, "shrink_minutes": SHRINK_MINUTES, "backtest": bt,
         "a_share_by_price": {str(k): round(float(by_band.loc[k].get("A", 0)), 1) for k in by_band.index},
         "a_share_by_expected": {str(k): round(float(by_expected.loc[k].get("A", 0)), 1) for k in by_expected.index},
     }
@@ -379,7 +406,7 @@ def main():
     print("\nTop A grades:")
     print(top[["season", "name", "team", "role", "age", "minutes", "value", "expected", "gap", "rating_pct"]].to_string(index=False))
     old = ps[ps["too_old"]]
-    print(f"\nCapped at B for age > {A_MAX_AGE}: {len(old)} ({', '.join(old['name'] + ' ' + old['season'].str[2:4] + '-' + old['season'].str[-2:])})")
+    print(f"\nGap and rating good enough for A/B, but older than {MAX_AGE} (graded C): {len(old)}")
 
 
 if __name__ == "__main__":
