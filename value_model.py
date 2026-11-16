@@ -45,11 +45,16 @@ RAW = HERE / "raw"
 #   with a gap of 1.25 or more rose as often as a C (31%).
 # - Age is decisive: good players with a gap rose in 58-59% of cases up to 27, but only 21% after 27. An older
 #   player's low price reflects the few seasons he has left, so the market is right.
-# - Gap size: A needs ×2 (9 of 10 such players rose), B ×1.25 (50% rose, vs 27% for C). For B, most of the
-#   edge comes from being good and young: good young players without a gap rose 43% of the time.
-# The rules held in each season separately (A > B > C every time), so they aren't fitted to one season.
+# - Gap size: A needs ×2, B ×1.25.
+# These were chosen on the backtest itself, so its numbers flatter them. rule_check() is the honest version:
+# rules chosen on one season, tested on the other. There, A rose 72% (n=18) and B 50% (n=34), against 45% for
+# everyone passing the age and rating filters: A adds a lot, B a little.
 A_GAP, B_GAP = 2.0, 1.25
 MAX_AGE = 27
+MIN_PCT = 50  # FotMob rating percentile within his role and season
+# Rule options tried by rule_check(): for each season with a known outcome, the best rules on the other seasons
+# are chosen from these and applied to that season, so the reported result is out-of-sample.
+RULE_GRID = {"b_gap": [1.1, 1.25, 1.5], "max_age": [23, 25, 27, 29, 99], "min_pct": [0, 50], "a_gap": [1.5, 2.0, 2.5, 3.0]}
 # Market value source: "scisports" (FotMob's player pages, scrape.py) or "transfermarkt" (transfermarkt.py).
 # Can be overridden on the command line: python value_model.py --source transfermarkt
 # SciSports, because its gap predicts the later value change: backtest correlation +0.16, against +0.05 with
@@ -86,6 +91,11 @@ CANDIDATES = {
     "longballs90": "Accurate long balls per 90",
     "caps_before": "International caps before this season",
     "height": "Height",
+    # Playing time was a feature until November 2026. It explains prices (the market pays for regulars) but says
+    # how much a player plays, not how well. Without it, R² fell from 0.83 to 0.81, but out-of-sample A picks
+    # rose 72% instead of 65% and B 50% instead of 38%, with the gap's link to the later change unchanged.
+    "min_share": "Share of minutes played",
+    "prev_min_share": "Last season's share of minutes",
 }
 # Cross-validation: 5 folds, repeated 5 times with different random splits, predictions averaged.
 # Repeating smooths out the luck of any single split.
@@ -97,7 +107,6 @@ USUAL_ROLE = {1: "CB", 2: "CM", 3: "ST"}  # FotMob's broad position, for players
 # Kept short on purpose: with under 1,000 rows, every extra feature adds noise to the estimates.
 FEATURES = {
     "age": "Age",                                       # the biggest single driver of market value
-    "min_share": "Share of minutes played",             # how much the coach trusts him
     "team_ppg": "Team points per game",                 # players at successful clubs carry a premium
     "rating": "FotMob rating",                          # FotMob's overall match rating, averaged
     "npxg90": "Non-penalty xG per 90",                  # scoring threat, without penalties (which depend on role)
@@ -111,7 +120,6 @@ FEATURES = {
     "dutch": "Dutch nationality",                       # homegrown players are priced differently
     "team_value": "Teammates' average market value",    # club reputation beyond results
     "prev_rating": "Last season's FotMob rating",       # market value reflects a track record, not one season
-    "prev_min_share": "Last season's share of minutes",
     "has_prev": "Played in the Eredivisie last season",
 }
 # Context features: shown in the reasons, but they say nothing about how well he plays, so the one-line
@@ -368,22 +376,116 @@ def r2(y, p):
     return 1 - ((y - p) ** 2).sum() / ((y - y.mean()) ** 2).sum()
 
 
+def grades(ps, a_gap=A_GAP, b_gap=B_GAP, max_age=MAX_AGE, min_pct=MIN_PCT):
+    """A/B/C per row: a gap of at least a_gap (A) or b_gap (B), plus a good enough rating and young enough."""
+    ok = (ps["rating_pct"] >= min_pct) & (ps["age"] <= max_age)
+    return np.where((ps["gap"] >= a_gap) & ok, "A", np.where((ps["gap"] >= b_gap) & ok, "B", "C"))
+
+
+def wilson(k, n, z=1.96):
+    """95% range for a share of k out of n. Honest about small groups: 9 of 10 is 60-98%, not "90%"."""
+    p, d = k / n, 1 + z * z / n
+    centre, half = (p + z * z / (2 * n)) / d, z * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return centre - half, centre + half
+
+
+def rose_stats(change):
+    """n, % that rose, its 95% range, and the median change factor, for a group of log value changes."""
+    n, k = len(change), int((change > 0).sum())
+    if n == 0:
+        return {"n": 0}
+    lo, hi = wilson(k, n)
+    return {"n": n, "rose": round(100 * k / n), "lo": round(100 * lo), "hi": round(100 * hi),
+            "median": round(float(np.exp(np.median(change))), 2)}
+
+
+def fmt_rose(st):
+    if not st["n"]:
+        return "n=  0"
+    return f"n={st['n']:3}  rose {st['rose']:3}%  (95% range {st['lo']}-{st['hi']}%)  median ×{st['median']}"
+
+
 def backtest(ps):
-    """Does the grade predict the market? Compare each player's value at the end of season t with his value at
-    the end of season t+1, per grade. R² only says how well we explain today's prices; this checks whether an
+    """Does the grade predict the market? Compare each player's value at the end of the season with his value
+    HORIZON_DAYS later, per grade. R² only says how well we explain today's prices; this checks whether an
     'undervalued' player's price actually went up afterwards.
 
-    The later value comes from the player pages' value history, so players sold abroad or relegated are
-    followed too. Seasons that ended less than HORIZON_DAYS ago can't be checked yet.
+    The rules were chosen on these same seasons, so these numbers are in-sample; rule_check() gives the
+    out-of-sample version. Two comparisons keep it fair:
+    - Baseline: players who pass the same age and rating filters, whatever their gap. If B barely beats it, the
+      filters do the work, not the model.
+    - Price bands: expensive players rose more often in general, so grades are also compared within a band.
+    The later value comes from the player pages, so players sold abroad or relegated are followed too.
     """
-    ps = ps.dropna(subset=["next_value"])
-    change = np.log(ps["next_value"] / ps["value"])  # log change: 0.69 = doubled
-    print(f"\nBacktest: value change over the {HORIZON_DAYS} days after the season ({len(ps)} player-seasons, "
-          f"seasons {', '.join(sorted(ps['season'].unique()))})")
+    k = ps.dropna(subset=["next_value"]).copy()
+    k["change"] = np.log(k["next_value"] / k["value"])  # log change: 0.69 = doubled
+    print(f"\nBacktest, in-sample: value change over the {HORIZON_DAYS} days after the season ({len(k)} player-seasons, "
+          f"seasons {', '.join(sorted(k['season'].unique()))})")
     out = {}
-    for grade, c in change.groupby(ps["grade"]):
-        out[grade] = {"n": int(len(c)), "rose": round(float((c > 0).mean()) * 100), "median": round(float(np.exp(c.median())), 2)}
-        print(f"  {grade}: n={out[grade]['n']:3}  rose {out[grade]['rose']:3}%  median ×{out[grade]['median']}")
+    for g in ["A", "B", "C"]:
+        out[g] = rose_stats(k.loc[k["grade"] == g, "change"])
+        print(f"  {g}: {fmt_rose(out[g])}")
+    filters = (k["rating_pct"] >= MIN_PCT) & (k["age"] <= MAX_AGE)
+    out["baseline"] = rose_stats(k.loc[filters, "change"])
+    print(f"  baseline (rating and age filters, any gap): {fmt_rose(out['baseline'])}")
+
+    # Per price third: does a gap still help when comparing players of a similar price?
+    k["band"] = pd.qcut(k["value"], 3, labels=["cheap", "mid", "expensive"])
+    out["by_price"] = {}
+    print("  per price third, A/B vs C:")
+    for band, g in k.groupby("band", observed=True):
+        ab, c = rose_stats(g.loc[g["grade"] != "C", "change"]), rose_stats(g.loc[g["grade"] == "C", "change"])
+        out["by_price"][band] = {"ab": ab, "c": c}
+        print(f"    {band:9} A/B {ab.get('rose')}% (n={ab['n']})   C {c.get('rose')}% (n={c['n']})")
+
+    # Gap vs later change with price and age held constant: correlate what's left of both after regressing on them
+    Z = np.c_[np.ones(len(k)), np.log(k["value"]), k["age"]]
+    resid = lambda v: v - Z @ np.linalg.lstsq(Z, v, rcond=None)[0]
+    out["partial_corr"] = round(float(np.corrcoef(resid(np.log(k["gap"].values)), resid(k["change"].values))[0, 1]), 2)
+    print(f"  corr(gap, later change) with price and age held constant: {out['partial_corr']:+.2f}")
+    return out
+
+
+def choose_rules(sel):
+    """The rules from RULE_GRID that worked best on sel: first the B rules (gap, age, rating) whose A/B picks
+    rose most often (at least 20 picks), then the A gap whose A picks rose most often (at least 5)."""
+    rose = lambda picks, min_n: (sel.loc[picks, "change"] > 0).mean() if picks.sum() >= min_n else -1
+    best = max(({"b_gap": b, "max_age": age, "min_pct": pct}
+                for b in RULE_GRID["b_gap"] for age in RULE_GRID["max_age"] for pct in RULE_GRID["min_pct"]),
+               key=lambda r: rose((sel["gap"] >= r["b_gap"]) & (sel["age"] <= r["max_age"]) & (sel["rating_pct"] >= r["min_pct"]), 20))
+    ok = (sel["age"] <= best["max_age"]) & (sel["rating_pct"] >= best["min_pct"])
+    a = max(RULE_GRID["a_gap"], key=lambda a: rose(ok & (sel["gap"] >= a), 5))
+    return {**best, "a_gap": max(a, best["b_gap"])}
+
+
+def rule_check(ps):
+    """Out-of-sample check of the grade rules: for each season with a known outcome, choose the rules on the
+    OTHER seasons only, then grade this season with them. With rules tuned on the data they're judged on,
+    9 of 10 A players rising says little; this shows how rules do on a season they never saw.
+    """
+    k = ps.dropna(subset=["next_value"]).copy()
+    k["change"] = np.log(k["next_value"] / k["value"])
+    seasons = sorted(k["season"].unique())
+    if len(seasons) < 2:
+        return None
+    print("\nRule check, out-of-sample (rules chosen on the other seasons):")
+    graded, chosen = [], {}
+    for t in seasons:
+        rules = choose_rules(k[k["season"] != t])
+        test = k[k["season"] == t].copy()
+        test["grade"] = grades(test, **rules)
+        test["baseline"] = (test["age"] <= rules["max_age"]) & (test["rating_pct"] >= rules["min_pct"])
+        graded.append(test)
+        chosen[t] = rules
+        print(f"  {t}: A gap {rules['a_gap']}, B gap {rules['b_gap']}, age <= {rules['max_age']}, "
+              f"rating pct >= {rules['min_pct']}  (chosen on {', '.join(s for s in seasons if s != t)})")
+    g = pd.concat(graded)
+    out = {"rules": chosen}
+    for grade in ["A", "B", "C"]:
+        out[grade] = rose_stats(g.loc[g["grade"] == grade, "change"])
+        print(f"  {grade}: {fmt_rose(out[grade])}")
+    out["baseline"] = rose_stats(g.loc[g["baseline"], "change"])
+    print(f"  baseline (same filters, any gap): {fmt_rose(out['baseline'])}")
     return out
 
 
@@ -495,11 +597,9 @@ def main():
     ps["gap"] = ps["expected"] / ps["value"]  # > 1: the model thinks he's worth more than his price
     # "Good player" check for A: rating percentile within his own position and season
     ps["rating_pct"] = ps.groupby(["season", "role"])["rating"].rank(pct=True) * 100
-    good = ps["rating_pct"] >= 50
-    young = ps["age"] <= MAX_AGE
-    ps["grade"] = np.where((ps["gap"] >= A_GAP) & good & young, "A", np.where((ps["gap"] >= B_GAP) & good & young, "B", "C"))
+    ps["grade"] = grades(ps)
     # Would be A or B on performance, but too old for the value to rise: shown as C with a note
-    ps["too_old"] = (ps["gap"] >= B_GAP) & good & ~young
+    ps["too_old"] = (ps["gap"] >= B_GAP) & (ps["rating_pct"] >= MIN_PCT) & (ps["age"] > MAX_AGE)
 
     # Price-bias checks: grades should not simply follow price.
     # By expected value: should be roughly flat (calibration makes the gap independent of the prediction).
@@ -521,6 +621,7 @@ def main():
     print("    " + by_band.round(0).to_string().replace("\n", "\n    "))
     print("\n  grades:", ps["grade"].value_counts().sort_index().to_dict())
     bt = backtest(ps)
+    bt["out_of_sample"] = rule_check(ps)
     fwd = forward_test(ps, X, y, r["make"])
     # Evaluated only: it didn't beat the baseline of age and gap (correlation +0.37 for both), so the grades keep
     # the A/B/C rules

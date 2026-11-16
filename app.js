@@ -639,6 +639,7 @@ function drawValue() {
     return li;
   }) : [el("li", null, "No players match these filters.")]));
 
+  const roseText = (label, s) => `${label} ${s.rose}% rose (${s.lo}-${s.hi}%, n=${s.n})`;
   const method = document.getElementById("vr-method");
   method.replaceChildren(el("p", null,
     `A model predicts each player's market value from performance and context, then compares that with his actual value.`));
@@ -646,9 +647,14 @@ function drawValue() {
   for (const t of [
     `Grade A: expected value at least ${m.a_gap}× the actual value. B: at least ${m.b_gap}×. Both also need a FotMob rating at or above the median ` +
       `for his position and an age of ${m.max_age} or younger. C: the rest. These rules come from a backtest: they're the ones that predicted a player's value rising.`,
-    `Backtest, value change in the ${m.horizon_days} days after the season, following players wherever they went: ` +
-      ["A", "B", "C"].filter(g => m.backtest[g]).map(g => `${g} ${m.backtest[g].rose}% rose (median ×${m.backtest[g].median}, n=${m.backtest[g].n})`).join(", ") +
-      `. Most of B's edge comes from being good and young; a gap of ${m.a_gap}× or more is where the model adds the most.`,
+    ...(m.backtest.out_of_sample ? [
+      `Backtest on a season the rules never saw (for each season, the rules were chosen on the other one), value change in the ${m.horizon_days} days after the season, ` +
+        `following players wherever they went: ` +
+        ["A", "B", "C"].map(g => roseText(g, m.backtest.out_of_sample[g])).join(", ") +
+        `. For comparison, ${roseText("of all players who pass the same age and rating filters, whatever their gap,", m.backtest.out_of_sample.baseline)}. ` +
+        `The ranges are 95% intervals: with this few players, A and B are estimates, not certainties.`] : []),
+    `Price matters: among the cheapest third, A/B players rose ${m.backtest.by_price.cheap.ab.rose}% of the time against ${m.backtest.by_price.cheap.c.rose}% for C; ` +
+      `among the most expensive third, ${m.backtest.by_price.expensive.ab.rose}% against ${m.backtest.by_price.expensive.c.rose}%. The model helps most for cheaper players.`,
     `Forward test, trained only on earlier seasons: ` +
       Object.entries(m.forward).map(([s, f]) => `${seasonLabel(s)} R² ${f.r2}` + (f.backtest_corr !== null ? ` (gap vs later value change: ${f.backtest_corr > 0 ? "+" : ""}${f.backtest_corr})` : "")).join(", ") + `.`,
     `Market values: ${m.value_source === "transfermarkt" ? "Transfermarkt" : "SciSports (via FotMob)"}. ` +
