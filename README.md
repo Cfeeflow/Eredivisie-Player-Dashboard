@@ -1,6 +1,6 @@
 # Eredivisie player stats
 
-An interactive dashboard of Eredivisie player statistics, built from FotMob match data. It runs as a static page: open `index.html` in a browser, or host the folder on GitHub Pages.
+An interactive dashboard of Eredivisie player statistics, built from FotMob match data. It runs as a static page: open `index.html` in a browser, or host the folder on GitHub Pages, or: https://cfeeflow.github.io/Eredivisie-Player-Dashboard/
 
 ## What's in it
 
